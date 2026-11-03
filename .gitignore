@@ -1,0 +1,15 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Jupyter / OS
+.ipynb_checkpoints/
+.DS_Store
+
+# Trained model: regenerate with `python train_model.py` (22 MB, changes every retrain)
+models/*.joblib
+
+# Streamlit secrets (never commit)
+.streamlit/secrets.toml
