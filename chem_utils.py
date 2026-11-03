@@ -12,17 +12,33 @@ from pathlib import Path
 import joblib
 import numpy as np
 from rdkit import Chem, RDLogger
-from rdkit.Chem import Descriptors
+from rdkit.Chem import Crippen, Descriptors, Lipinski, rdMolDescriptors
 
 # RDKit prints noisy warnings for bad SMILES; we handle errors ourselves.
 RDLogger.DisableLog("rdApp.*")
 
 MODEL_PATH = Path(__file__).parent / "models" / "esol_model.joblib"
 
-# The four descriptors from Delaney's original ESOL paper (2004).
-# If your chem-ml-solubility repo uses different features, change
-# FEATURE_NAMES and featurize() together, then retrain.
-FEATURE_NAMES = ["MolLogP", "MolWt", "NumRotatableBonds", "AromaticProportion"]
+# The seven descriptors from my chem-ml-solubility analysis (molecules.ipynb).
+# Names and definitions match that notebook exactly, so the cross-validated
+# results reported there apply to this model. Change FEATURE_NAMES and
+# featurize() together, then retrain.
+FEATURE_NAMES = ["MolWt", "LogP", "HBD", "HBA", "RotBonds", "TPSA", "AromProp"]
+
+# Plain-English names for the app's descriptor table.
+FEATURE_LABELS = {
+    "MolWt": "Molecular weight (g/mol)",
+    "LogP": "logP (Crippen)",
+    "HBD": "H-bond donors",
+    "HBA": "H-bond acceptors",
+    "RotBonds": "Rotatable bonds",
+    "TPSA": "Polar surface area (Å²)",
+    "AromProp": "Aromatic proportion",
+}
+
+# P=O compounds (phosphates/phosphonates) were the model's biggest failure in
+# chem-ml-solubility: MAE 2.6 log units on 10 compounds, predicted too insoluble.
+P_EQUALS_O = Chem.MolFromSmarts("[P]=[O]")
 
 
 # ---------------------------------------------------------------- parsing
@@ -50,11 +66,19 @@ def aromatic_proportion(mol) -> float:
 def featurize(mol) -> dict:
     """Turn a molecule into the numbers the model was trained on."""
     return {
-        "MolLogP": Descriptors.MolLogP(mol),
         "MolWt": Descriptors.MolWt(mol),
-        "NumRotatableBonds": Descriptors.NumRotatableBonds(mol),
-        "AromaticProportion": aromatic_proportion(mol),
+        "LogP": Crippen.MolLogP(mol),
+        "HBD": Lipinski.NumHDonors(mol),
+        "HBA": Lipinski.NumHAcceptors(mol),
+        "RotBonds": Lipinski.NumRotatableBonds(mol),
+        "TPSA": rdMolDescriptors.CalcTPSA(mol),
+        "AromProp": aromatic_proportion(mol),
     }
+
+
+def has_p_equals_o(mol) -> bool:
+    """True for phosphates/phosphonates, the class the model is known to get wrong."""
+    return mol.HasSubstructMatch(P_EQUALS_O)
 
 
 def feature_vector(mol) -> np.ndarray:
@@ -66,7 +90,8 @@ def feature_vector(mol) -> np.ndarray:
 def load_model(path: Path = MODEL_PATH) -> dict:
     """Load the bundle saved by train_model.py.
 
-    The bundle is a dict: {"model", "features", "test_rmse", "test_r2"}.
+    The bundle is a dict with keys "model", "features", "importances" and "cv"
+    (cross-validated RMSE/R2 for random and scaffold folds; see train_model.py).
     """
     if not path.exists():
         raise FileNotFoundError(
@@ -116,12 +141,14 @@ if __name__ == "__main__":
         "aspirin": "CC(=O)Oc1ccccc1C(=O)O",
         "caffeine": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
         "glucose": "OCC1OC(O)C(O)C(O)C1O",
+        "triethyl phosphate": "CCOP(=O)(OCC)OCC",
         "not a molecule": "this_is_not_smiles",
     }
     for name, smi in tests.items():
         mol = parse_smiles(smi)
         if mol is None:
-            print(f"{name:15s}  invalid SMILES (correctly rejected)")
+            print(f"{name:20s}  invalid SMILES (correctly rejected)")
             continue
         logS = predict_logS(mol, bundle)
-        print(f"{name:15s}  logS = {logS:6.2f}  ({solubility_label(logS)})")
+        flag = "  [P=O warning]" if has_p_equals_o(mol) else ""
+        print(f"{name:20s}  logS = {logS:6.2f}  ({solubility_label(logS)}){flag}")
