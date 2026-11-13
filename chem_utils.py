@@ -7,12 +7,14 @@ That separation makes this file easy to test on its own:
     python chem_utils.py
 """
 
+import re
 from pathlib import Path
 
 import joblib
 import numpy as np
 from rdkit import Chem, RDLogger
 from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdMolDescriptors
+from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
 # RDKit prints noisy warnings for bad SMILES; we handle errors ourselves.
 RDLogger.DisableLog("rdApp.*")
@@ -159,6 +161,57 @@ def qed_score(mol) -> float:
     return QED.qed(mol)
 
 
+# ------------------------------------------------------- structural alerts
+def build_alert_catalogs() -> dict:
+    """PAINS and Brenk filter catalogs from RDKit, keyed by source name.
+
+    PAINS (Baell & Holloway, 2010): 480 substructures that often give false
+    positives in high-throughput screening assays.
+    Brenk (Brenk et al., 2008): 105 substructures that are reactive, toxic or
+    otherwise unattractive in drug candidates.
+    Building them takes a moment, so the app builds them once and caches them.
+    """
+    catalogs = {}
+    for name, which in [("PAINS", FilterCatalogParams.FilterCatalogs.PAINS),
+                        ("Brenk", FilterCatalogParams.FilterCatalogs.BRENK)]:
+        params = FilterCatalogParams()
+        params.AddCatalog(which)
+        catalogs[name] = FilterCatalog(params)
+    return catalogs
+
+
+def structural_alerts(mol, catalogs: dict) -> list:
+    """Every alert that matches mol, with the atoms it matched.
+
+    Returns a list of {"name", "source", "atoms"}, where atoms is a sorted
+    list of atom indices in mol (an alert can match in several places;
+    all of them are included).
+    """
+    alerts = []
+    for source, catalog in catalogs.items():
+        for entry in catalog.GetMatches(mol):
+            atoms = set()
+            for match in entry.GetFilterMatches(mol):
+                # each pair is (atom in the alert pattern, atom in our molecule)
+                atoms.update(pair.target for pair in match.atomPairs)
+            # PAINS names end in the number of hits in the original screen,
+            # e.g. "ene_rhod_A(235)"; drop it for display
+            name = re.sub(r"\(\d+\)$", "", entry.GetDescription()).replace("_", " ")
+            alerts.append({
+                "name": name,
+                "source": source,
+                "atoms": sorted(atoms),
+            })
+    return alerts
+
+
+def bonds_between(mol, atoms) -> list:
+    """Indices of bonds whose two ends are both in atoms, for highlighting."""
+    atoms = set(atoms)
+    return [b.GetIdx() for b in mol.GetBonds()
+            if b.GetBeginAtomIdx() in atoms and b.GetEndAtomIdx() in atoms]
+
+
 def feature_vector(mol) -> np.ndarray:
     feats = featurize(mol)
     return np.array([[feats[name] for name in FEATURE_NAMES]])
@@ -215,12 +268,14 @@ def logS_to_mg_per_ml(logS: float, mol) -> float:
 # ------------------------------------------------------------ smoke test
 if __name__ == "__main__":
     bundle = load_model()
+    catalogs = build_alert_catalogs()
     tests = {
         "benzene": "c1ccccc1",
         "aspirin": "CC(=O)Oc1ccccc1C(=O)O",
         "caffeine": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
         "glucose": "OCC1OC(O)C(O)C(O)C1O",
         "triethyl phosphate": "CCOP(=O)(OCC)OCC",
+        "rhodanine (PAINS)": "O=C1NC(=S)SC1=Cc1ccccc1",
         "not a molecule": "this_is_not_smiles",
     }
     for name, smi in tests.items():
@@ -233,3 +288,6 @@ if __name__ == "__main__":
         lip = lipinski_report(mol)
         print(f"{name:20s}  logS = {logS:6.2f}  ({solubility_label(logS)})  "
               f"QED = {qed_score(mol):.2f}  Ro5 violations = {lip['violations']}{flag}")
+        for alert in structural_alerts(mol, catalogs):
+            print(f"{'':22s}{alert['source']} alert: {alert['name']} "
+                  f"({len(alert['atoms'])} atoms)")

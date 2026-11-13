@@ -13,6 +13,7 @@ Builds on my earlier analysis project, [chem-ml-solubility](https://github.com/A
 - **Descriptor table** showing the 25 descriptors the model uses, sorted by importance
 - **P=O note** for phosphates and phosphonates, the model's historically hardest class
 - **Drug-likeness:** QED score and Lipinski's rule of five
+- **Structural alerts:** PAINS and Brenk substructure flags, with the matched atoms highlighted
 
 ## Model
 
