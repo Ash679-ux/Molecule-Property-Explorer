@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install system libraries RDKit's drawing code needs
+        run: sudo apt-get update && sudo apt-get install -y $(cat packages.txt)
+      - name: Install Python packages
+        run: pip install -r requirements.txt pytest
+      - name: Run tests
+        run: pytest -q
