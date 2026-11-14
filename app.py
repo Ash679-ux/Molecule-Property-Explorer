@@ -18,6 +18,8 @@ from chem_utils import (
     has_p_equals_o,
     lipinski_report,
     load_model,
+    logp_contributions,
+    logp_heatmap_png,
     logS_to_mg_per_ml,
     parse_smiles,
     predict_logS,
@@ -143,6 +145,36 @@ with col_props:
         "add up to 1. Scroll the table for all descriptors."
     )
 
+# ------------------------------------------------------------- "why" view
+st.divider()
+st.header("Why this prediction?")
+col_map, col_why = st.columns([1, 1])
+
+with col_map:
+    st.image(logp_heatmap_png(mol))
+
+with col_why:
+    weights = logp_contributions(mol)
+    logp_share = importances["LogP"]
+    st.metric("logP (Crippen)", f"{sum(weights):.2f}")
+    st.markdown(
+        f"logP is the model's most important descriptor (importance {logp_share:.2f}), so "
+        f"the atoms driving logP drive most of the prediction.\n\n"
+        f"- **Red** atoms raise logP: greasy parts that make the molecule **less** soluble\n"
+        f"- **Blue** atoms lower logP: polar parts that make it **more** soluble"
+    )
+    greasy = sum(w for w in weights if w > 0)
+    polar = sum(w for w in weights if w < 0)
+    st.markdown(
+        f"Greasy atoms add **{greasy:+.2f}**, polar atoms add **{polar:+.2f}**, "
+        f"giving logP **{greasy + polar:.2f}**."
+    )
+    st.caption(
+        "Contributions come from the Crippen logP method (Wildman & Crippen, 1999), with each "
+        "hydrogen's share added to the atom it's bonded to. This explains the logP descriptor, "
+        "not the whole model: the other descriptors still add their part."
+    )
+
 # ----------------------------------------------------------- drug-likeness
 st.divider()
 st.header("Drug-likeness")
@@ -226,7 +258,5 @@ st.caption(
 )
 
 # -------------------------------------------------------- coming next
-# TODO (days 7-8): "why" view - Crippen atom contributions drawn with
-#                  rdkit.Chem.Draw.SimilarityMaps
 # TODO (extra):    applicability-domain warning using Tanimoto similarity
 #                  to the nearest training molecule

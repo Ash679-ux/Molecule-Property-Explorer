@@ -14,6 +14,7 @@ import joblib
 import numpy as np
 from rdkit import Chem, RDLogger
 from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdMolDescriptors
+from rdkit.Chem.Draw import SimilarityMaps, rdMolDraw2D
 from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
 # RDKit prints noisy warnings for bad SMILES; we handle errors ourselves.
@@ -159,6 +160,40 @@ def qed_score(mol) -> float:
     Higher is more drug-like.
     """
     return QED.qed(mol)
+
+
+# ------------------------------------------------------------- "why" view
+def logp_contributions(mol) -> list:
+    """Each heavy atom's contribution to Crippen logP (Wildman & Crippen, 1999).
+
+    Crippen logP is a sum of atom contributions, hydrogens included. Each
+    hydrogen's share is added to the atom it is bonded to, so the list has one
+    value per heavy atom and sums exactly to Crippen.MolLogP(mol).
+    """
+    with_h = Chem.AddHs(mol)
+    contribs = [c[0] for c in rdMolDescriptors._CalcCrippenContribs(with_h)]
+    weights = [0.0] * mol.GetNumAtoms()
+    for atom in with_h.GetAtoms():
+        idx = atom.GetIdx()
+        if atom.GetAtomicNum() == 1:
+            weights[atom.GetNeighbors()[0].GetIdx()] += contribs[idx]
+        else:
+            weights[idx] += contribs[idx]  # heavy atoms keep their indices after AddHs
+    return weights
+
+
+def logp_heatmap_png(mol, size: int = 400) -> bytes:
+    """PNG of the molecule shaded by logP contribution.
+
+    Red = raises logP (greasy, lowers solubility); blue = lowers logP (polar,
+    raises solubility).
+    """
+    drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+    SimilarityMaps.GetSimilarityMapFromWeights(
+        mol, logp_contributions(mol), draw2d=drawer, colorMap="bwr"
+    )
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText()
 
 
 # ------------------------------------------------------- structural alerts

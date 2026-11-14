@@ -14,6 +14,7 @@ Builds on my earlier analysis project, [chem-ml-solubility](https://github.com/A
 - **P=O note** for phosphates and phosphonates, the model's historically hardest class
 - **Drug-likeness:** QED score and Lipinski's rule of five
 - **Structural alerts:** PAINS and Brenk substructure flags, with the matched atoms highlighted
+- **Why this prediction?** A heatmap of each atom's contribution to logP, the model's most important descriptor
 
 ## Model
 
