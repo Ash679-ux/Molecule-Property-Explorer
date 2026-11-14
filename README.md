@@ -16,6 +16,7 @@ Builds on my earlier analysis project, [chem-ml-solubility](https://github.com/A
 - **Drug-likeness:** QED score and Lipinski's rule of five
 - **Structural alerts:** PAINS and Brenk substructure flags, with the matched atoms highlighted
 - **Why this prediction?** A heatmap of each atom's contribution to logP, the model's most important descriptor
+- **Draw or type:** enter SMILES or draw the molecule in a Ketcher editor
 
 ## Model
 

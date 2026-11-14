@@ -8,6 +8,7 @@ Run with:
 import pandas as pd
 import streamlit as st
 from rdkit.Chem import Draw
+from streamlit_ketcher import st_ketcher
 
 from chem_utils import (
     DOMAIN_THRESHOLD,
@@ -70,7 +71,7 @@ def get_training_fingerprints():
 
 # ------------------------------------------------------------------ header
 st.title("🧪 Molecule Property Explorer")
-st.caption("Enter a molecule as SMILES to see its structure and predicted aqueous solubility.")
+st.caption("Type a SMILES string or draw a molecule to see its predicted solubility, drug-likeness and structural alerts.")
 
 try:
     bundle = get_model()
@@ -82,7 +83,9 @@ except (FileNotFoundError, ValueError) as err:
 with st.sidebar:
     st.header("Input")
     example = st.selectbox("Examples", list(EXAMPLES.keys()))
-    smiles = st.text_input("SMILES", value=EXAMPLES[example], placeholder="e.g. c1ccccc1")
+    mode = st.radio("Enter a molecule by", ["Typing SMILES", "Drawing it"], horizontal=True)
+    if mode == "Typing SMILES":
+        smiles = st.text_input("SMILES", value=EXAMPLES[example], placeholder="e.g. c1ccccc1")
     st.divider()
     cv = bundle["cv"]
     st.markdown(
@@ -93,10 +96,16 @@ with st.sidebar:
         f"- unseen ring frameworks: {cv['scaffold']['RMSE']:.2f} log units"
     )
     st.caption("Full analysis: [chem-ml-solubility](https://github.com/Ash679-ux/chem-ml-solubility)")
-    # TODO (days 9-10): add the streamlit-ketcher drawing box here.
+
+if mode == "Drawing it":
+    st.subheader("Draw a molecule")
+    # Ketcher editor; returns the drawing as SMILES once Apply is clicked.
+    # The key includes the example so picking a new one reloads the editor.
+    smiles = st_ketcher(EXAMPLES[example], height=450, key=f"ketcher-{example}")
+    st.caption("Draw or edit the structure, then click **Apply** below the editor to update the results.")
 
 if not smiles:
-    st.info("Pick an example or type a SMILES string in the sidebar to get started.")
+    st.info("Pick an example, type a SMILES string or draw a molecule to get started.")
     st.stop()
 
 mol = parse_smiles(smiles)

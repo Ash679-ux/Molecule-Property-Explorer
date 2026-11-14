@@ -5,3 +5,4 @@ pandas
 numpy
 joblib
 tqdm
+streamlit-ketcher
