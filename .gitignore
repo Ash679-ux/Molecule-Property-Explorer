@@ -11,8 +11,8 @@ __pycache__/
 # AqSolDB: downloaded by train_model.py on first run
 data/aqsoldb.csv
 
-# Trained model: regenerate with `python train_model.py` (22 MB, changes every retrain)
-models/*.joblib
+# The trained model (models/esol_model.joblib, about 2.6 MB) IS committed, so the
+# deployed app can load it without retraining. Retrain with `python train_model.py`.
 
 # Streamlit secrets (never commit)
 .streamlit/secrets.toml
