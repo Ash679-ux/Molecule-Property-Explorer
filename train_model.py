@@ -34,7 +34,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from rdkit import Chem
+from rdkit import Chem, DataStructs
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
@@ -42,7 +42,17 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-from chem_utils import FEATURE_NAMES, MODEL_PATH, featurize, has_p_equals_o, parse_smiles
+from chem_utils import (
+    DOMAIN_BANDS,
+    FEATURE_NAMES,
+    MODEL_PATH,
+    band_of,
+    canonical_smiles,
+    featurize,
+    fingerprint,
+    has_p_equals_o,
+    parse_smiles,
+)
 
 DATA_DIR = Path(__file__).parent / "data"
 ESOL_CSV = DATA_DIR / "delaney-processed.csv"
@@ -124,10 +134,17 @@ def scaffold_folds(mols, n_splits=5, seed=SEED):
 
 
 def cross_validate(esol, X_esol, aq, X_aq):
-    """Scores on ESOL test folds, with AqSolDB added to each training fold."""
+    """Scores on ESOL test folds, with AqSolDB added to each training fold.
+
+    Also returns the random-fold errors grouped by each test molecule's
+    similarity to its training fold, for the app's applicability-domain check.
+    """
     y = esol["logS"].to_numpy()
     y_aq = aq["logS"].to_numpy()
     is_po = esol["mol"].apply(has_p_equals_o).to_numpy()
+    fps_esol = [fingerprint(m) for m in esol["mol"]]
+    fps_aq = [fingerprint(m) for m in aq["mol"]]
+    sims, errors = [], []  # random folds only
     results = {}
     for split in ["random", "scaffold"]:
         rmses, r2s, po_maes = [], [], []
@@ -145,6 +162,11 @@ def cross_validate(esol, X_esol, aq, X_aq):
                 X_train = np.vstack([X_esol[train_idx], X_aq[keep]])
                 y_train = np.concatenate([y[train_idx], y_aq[keep]])
                 pred[test_idx] = make_model(seed).fit(X_train, y_train).predict(X_esol[test_idx])
+                if split == "random":
+                    train_fps = [fps_esol[i] for i in train_idx] + fps_aq
+                    for i in test_idx:
+                        sims.append(max(DataStructs.BulkTanimotoSimilarity(fps_esol[i], train_fps)))
+                        errors.append(y[i] - pred[i])
             err = y - pred
             rmses.append(np.sqrt(mean_squared_error(y, pred)))
             r2s.append(r2_score(y, pred))
@@ -158,7 +180,16 @@ def cross_validate(esol, X_esol, aq, X_aq):
         print(f"{split:8s} folds:  RMSE = {results[split]['RMSE']:.3f} "
               f"(sd {results[split]['RMSE_sd']:.3f})   R^2 = {results[split]['R2']:.3f}   "
               f"MAE on {int(is_po.sum())} P=O compounds = {results[split]['MAE_PO']:.2f}")
-    return results
+
+    sims, errors = np.array(sims), np.array(errors)
+    domain = []
+    for lo, hi in DOMAIN_BANDS:
+        in_band = np.array([band_of(s) == (lo, hi) for s in sims])
+        n = int(in_band.sum()) // len(CV_SEEDS)  # molecules, not predictions
+        rmse = float(np.sqrt((errors[in_band] ** 2).mean())) if in_band.any() else None
+        domain.append({"lo": lo, "hi": hi, "n": n, "RMSE": rmse})
+        print(f"  similarity {lo:.1f}-{hi:.1f}: {n:4d} molecules, RMSE = {rmse:.2f}")
+    return results, domain
 
 
 # -------------------------------------------------------------------- main
@@ -171,7 +202,7 @@ def main():
     X_aq = feature_matrix(aq["mol"], desc="Featurising AqSolDB")
 
     print("Cross-validating on ESOL (5 folds x 3 shuffles, random and scaffold)...")
-    cv = cross_validate(esol, X_esol, aq, X_aq)
+    cv, domain = cross_validate(esol, X_esol, aq, X_aq)
 
     # final model uses every molecule
     print("Training the final model and measuring feature importances...")
@@ -191,7 +222,12 @@ def main():
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(
         {"model": model, "features": FEATURE_NAMES, "importances": importances,
-         "cv": cv, "n_train": len(y)},
+         "cv": cv, "n_train": len(y), "domain": domain,
+         "train": {  # for the app's nearest-neighbour lookup
+             "smiles": [canonical_smiles(m) for m in esol["mol"]] + [canonical_smiles(m) for m in aq["mol"]],
+             "logS": y.tolist(),
+             "source": ["ESOL"] * len(esol) + ["AqSolDB"] * len(aq),
+         }},
         MODEL_PATH,
     )
     print(f"Saved model ({len(y)} training molecules) to {MODEL_PATH}")

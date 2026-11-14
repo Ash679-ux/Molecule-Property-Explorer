@@ -11,6 +11,7 @@ Builds on my earlier analysis project, [chem-ml-solubility](https://github.com/A
 
 - **Predicted solubility** (logS and mg/mL) with a plain-English label and the model's typical error
 - **Descriptor table** showing the 25 descriptors the model uses, sorted by importance
+- **Applicability-domain warning** when a molecule is unlike anything in the training data, with the nearest training molecule and its measured logS
 - **P=O note** for phosphates and phosphonates, the model's historically hardest class
 - **Drug-likeness:** QED score and Lipinski's rule of five
 - **Structural alerts:** PAINS and Brenk substructure flags, with the matched atoms highlighted

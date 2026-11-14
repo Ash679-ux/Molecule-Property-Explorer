@@ -10,17 +10,21 @@ import streamlit as st
 from rdkit.Chem import Draw
 
 from chem_utils import (
+    DOMAIN_THRESHOLD,
     FEATURE_LABELS,
+    band_of,
     bonds_between,
     build_alert_catalogs,
     canonical_smiles,
     featurize,
+    fingerprint,
     has_p_equals_o,
     lipinski_report,
     load_model,
     logp_contributions,
     logp_heatmap_png,
     logS_to_mg_per_ml,
+    nearest_neighbour,
     parse_smiles,
     predict_logS,
     qed_score,
@@ -56,6 +60,12 @@ def get_model():
 @st.cache_resource
 def get_alert_catalogs():
     return build_alert_catalogs()
+
+
+@st.cache_resource
+def get_training_fingerprints():
+    """Fingerprints of every training molecule, for the nearest-neighbour check."""
+    return [fingerprint(parse_smiles(s)) for s in get_model()["train"]["smiles"]]
 
 
 # ------------------------------------------------------------------ header
@@ -120,6 +130,30 @@ with col_props:
             f"worst class (off by about 2.5 log units). A P=O count and about 170 P=O compounds "
             f"from AqSolDB cut the error to about {cv['random']['MAE_PO']:.1f} log units, but "
             f"very soluble liquids such as triethyl phosphate can still be predicted too low."
+        )
+
+    # applicability domain: how close is this to anything the model was trained on?
+    sim, nn_idx = nearest_neighbour(mol, get_training_fingerprints())
+    train = bundle["train"]
+    band = next(b for b in bundle["domain"] if (b["lo"], b["hi"]) == band_of(sim))
+    if sim < DOMAIN_THRESHOLD:
+        st.warning(
+            f"**Unlike the training data** (nearest training molecule is only {sim:.2f} similar). "
+            f"In cross-validation, molecules this dissimilar had an error of about "
+            f"±{band['RMSE']:.1f} log units, so treat this prediction as a rough guess."
+        )
+    with st.expander(f"Nearest training molecule: {sim:.2f} similar"):
+        nn_mol = parse_smiles(train["smiles"][nn_idx])
+        st.image(Draw.MolToImage(nn_mol, size=(250, 250)))
+        st.markdown(
+            f"`{train['smiles'][nn_idx]}`  \n"
+            f"Measured logS **{train['logS'][nn_idx]:.2f}** ({train['source'][nn_idx]})"
+        )
+        st.caption(
+            "Similarity = Tanimoto similarity of Morgan fingerprints (radius 2), from 0 to 1. "
+            f"Cross-validated error by similarity band: "
+            + ", ".join(f"{b['lo']:.1f}–{b['hi']:.1f}: ±{b['RMSE']:.2f}" for b in bundle["domain"])
+            + "."
         )
 
     st.subheader("Descriptors used by the model")
@@ -256,7 +290,3 @@ st.caption(
     "or otherwise unwanted in drug candidates. These are flags for a chemist to look at, not "
     "verdicts: aspirin, a widely used drug, triggers the Brenk phenol ester alert."
 )
-
-# -------------------------------------------------------- coming next
-# TODO (extra):    applicability-domain warning using Tanimoto similarity
-#                  to the nearest training molecule

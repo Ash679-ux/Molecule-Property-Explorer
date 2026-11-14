@@ -12,8 +12,8 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from rdkit import Chem, RDLogger
-from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdMolDescriptors
+from rdkit import Chem, DataStructs, RDLogger
+from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdFingerprintGenerator, rdMolDescriptors
 from rdkit.Chem.Draw import SimilarityMaps, rdMolDraw2D
 from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
@@ -162,6 +162,34 @@ def qed_score(mol) -> float:
     return QED.qed(mol)
 
 
+# ----------------------------------------------------- applicability domain
+# Morgan fingerprints (radius 2, i.e. ECFP4-like) compared with Tanimoto
+# similarity. Below DOMAIN_THRESHOLD the model's cross-validated error rises
+# clearly (see the "domain" table that train_model.py saves in the bundle).
+MORGAN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+DOMAIN_THRESHOLD = 0.3
+DOMAIN_BANDS = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.7), (0.7, 1.0)]
+
+
+def fingerprint(mol):
+    return MORGAN.GetFingerprint(mol)
+
+
+def nearest_neighbour(mol, train_fps) -> tuple:
+    """(similarity, index) of the most similar training molecule."""
+    sims = DataStructs.BulkTanimotoSimilarity(fingerprint(mol), train_fps)
+    idx = int(np.argmax(sims))
+    return sims[idx], idx
+
+
+def band_of(similarity: float) -> tuple:
+    """The DOMAIN_BANDS entry a similarity falls in (1.0 goes in the top band)."""
+    for lo, hi in DOMAIN_BANDS:
+        if lo <= similarity < hi:
+            return (lo, hi)
+    return DOMAIN_BANDS[-1]
+
+
 # ------------------------------------------------------------- "why" view
 def logp_contributions(mol) -> list:
     """Each heavy atom's contribution to Crippen logP (Wildman & Crippen, 1999).
@@ -257,8 +285,10 @@ def load_model(path: Path = MODEL_PATH) -> dict:
     """Load the bundle saved by train_model.py.
 
     The bundle is a dict with keys "model", "features", "importances", "cv"
-    (cross-validated RMSE/R2/P=O MAE for random and scaffold folds) and
-    "n_train" (molecules in the final training set); see train_model.py.
+    (cross-validated RMSE/R2/P=O MAE for random and scaffold folds),
+    "n_train" (molecules in the final training set), "train" (their SMILES,
+    measured logS and source dataset) and "domain" (cross-validated RMSE by
+    similarity band); see train_model.py.
     """
     if not path.exists():
         raise FileNotFoundError(
