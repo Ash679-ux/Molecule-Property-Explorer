@@ -134,3 +134,57 @@ def test_predict_batch_handles_invalid_rows(bundle, catalogs, train_fps):
     table = cu.predict_batch([ASPIRIN, "not smiles", None], bundle, catalogs, train_fps)
     assert list(table["valid"]) == [True, False, False]
     assert table.loc[0, "Ro5_violations"] == 0
+
+
+# ------------------------------------------------------------- input checks
+@pytest.mark.parametrize("text", ["", "   ", None])
+def test_empty_input_has_no_problem_message(text):
+    assert cu.check_smiles(text) == (None, None)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("CCO CCC", "spaces"),
+    ("CC(C", "brackets"),
+    ("C[CH2", "square brackets"),
+    ("C1CC", "ring isn't closed"),
+    ("C(C)(C)(C)(C)C", "5 bonds"),
+    ("c1cccc1", "aromatic ring"),
+    ("C[Xx]", "isn't valid SMILES"),
+])
+def test_invalid_input_explains_why(text, expected):
+    mol, problem = cu.check_smiles(text)
+    assert mol is None and expected in problem
+
+
+def test_valid_input_parses():
+    mol, problem = cu.check_smiles("  " + ASPIRIN + "  ")
+    assert mol is not None and problem is None
+
+
+@pytest.mark.parametrize("smiles, expected", [
+    ("CC(=O)[O-].[Na+]", "separate pieces"),
+    ("C[Si](C)(C)C", "Si"),
+    ("O", "no carbon"),
+    ("[CH3]", "radical"),
+    ("C[N+](C)(C)C", "net charge of +1"),
+])
+def test_input_warnings(smiles, expected):
+    assert any(expected in w for w in cu.input_warnings(cu.parse_smiles(smiles)))
+
+
+def test_size_warning():
+    assert any("heavy atoms" in w for w in cu.input_warnings(cu.parse_smiles("C" * 200), max_heavy_atoms=164))
+
+
+def test_ordinary_molecule_has_no_warnings():
+    assert cu.input_warnings(cu.parse_smiles(ASPIRIN), max_heavy_atoms=164) == []
+
+
+@pytest.mark.parametrize("smiles", ["C", "O", "[Fe+2]"])
+def test_single_atom_heatmap_is_skipped(smiles):
+    assert cu.logp_heatmap_png(cu.parse_smiles(smiles)) is None
+
+
+def test_batch_reports_problem(bundle, catalogs, train_fps):
+    table = cu.predict_batch(["C1CC"], bundle, catalogs, train_fps)
+    assert "ring" in table.loc[0, "problem"]

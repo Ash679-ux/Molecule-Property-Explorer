@@ -17,6 +17,7 @@ It builds on my earlier analysis project, [chem-ml-solubility](https://github.co
 - **Applicability-domain warning** when a molecule is unlike the training data, with the nearest training molecule and its measured value
 - **Drug-likeness:** QED score and Lipinski's rule of five
 - **Structural alerts:** PAINS and Brenk flags, with the matched atoms highlighted
+- **Input checks:** says exactly why a SMILES can't be read (unmatched brackets, an unclosed ring, too many bonds on an atom, spaces) and warns about salts, unfamiliar elements, charges and very large molecules
 - **Three ways in:** type SMILES, draw in a Ketcher editor, or upload a CSV for batch predictions
 
 | Why this prediction? | Structural alerts |
@@ -80,7 +81,7 @@ The trained model is in the repo (`models/solubility_model.joblib`, 2.6 MB), so 
 
 ```bash
 python train_model.py   # retrain: downloads AqSolDB, cross-validates, saves the model
-pytest                  # run the 27 tests (also run by GitHub Actions on every push)
+pytest                  # run the 49 tests (also run by GitHub Actions on every push)
 ```
 
 Library versions are pinned because a saved scikit-learn model only loads reliably with the version that

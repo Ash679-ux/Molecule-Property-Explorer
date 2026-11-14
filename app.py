@@ -44,6 +44,11 @@ def get_training_fingerprints():
     return [cu.fingerprint(cu.parse_smiles(s)) for s in get_model()["train"]["smiles"]]
 
 
+@st.cache_resource
+def get_max_heavy_atoms():
+    return max(cu.parse_smiles(s).GetNumHeavyAtoms() for s in get_model()["train"]["smiles"])
+
+
 # Sidebar
 
 def sidebar(bundle):
@@ -73,7 +78,10 @@ def drawing_box(example):
     st.subheader("Draw a molecule")
     # Keying on the example reloads the editor when a different example is picked.
     smiles = st_ketcher(EXAMPLES[example], height=450, key=f"ketcher-{example}")
-    st.caption("Draw or edit the structure, then click **Apply** below the editor to update the results.")
+    if smiles:
+        st.caption(f"Showing results for `{smiles}`. Edit the structure and click **Apply** to update.")
+    else:
+        st.info("The editor is empty. Draw a structure (or pick an example), then click **Apply**.")
     return smiles
 
 
@@ -103,13 +111,20 @@ def batch_page(bundle):
 
     with st.spinner("Predicting..."):
         results = cu.predict_batch(
-            data[column].head(BATCH_LIMIT), bundle, get_alert_catalogs(), get_training_fingerprints()
+            data[column].head(BATCH_LIMIT), bundle, get_alert_catalogs(),
+            get_training_fingerprints(), get_max_heavy_atoms(),
         )
+    if results.empty:
+        st.warning("The `smiles` column is empty.")
+        return
     invalid = int((~results["valid"]).sum())
-    st.success(
-        f"Done: {len(results) - invalid:,} molecules predicted"
-        + (f", {invalid:,} invalid SMILES skipped." if invalid else ".")
-    )
+    if invalid == len(results):
+        st.error("None of the SMILES could be read. The `problem` column says why for each one.")
+    else:
+        st.success(
+            f"Done: {len(results) - invalid:,} molecules predicted"
+            + (f", {invalid:,} invalid SMILES skipped (see the `problem` column)." if invalid else ".")
+        )
     st.dataframe(results, hide_index=True, width="stretch")
     st.download_button("Download results (CSV)", results.to_csv(index=False), "predictions.csv", "text/csv")
 
@@ -202,7 +217,11 @@ def why_section(mol, bundle):
     col_map, col_text = st.columns(2)
 
     with col_map:
-        st.image(cu.logp_heatmap_png(mol))
+        heatmap = cu.logp_heatmap_png(mol)
+        if heatmap is None:
+            st.caption("This molecule has only one atom, so there's no map to draw.")
+        else:
+            st.image(heatmap)
 
     with col_text:
         weights = cu.logp_contributions(mol)
@@ -325,13 +344,20 @@ def main():
     if mode == "Drawing it":
         smiles = drawing_box(example)
 
-    if not smiles:
-        st.info("Pick an example, type a SMILES string or draw a molecule to get started.")
+    mol, problem = cu.check_smiles(smiles)
+    if problem:
+        st.error(f"**Couldn't read `{smiles.strip()}`.** {problem}")
         return
-    mol = cu.parse_smiles(smiles)
     if mol is None:
-        st.error(f"Couldn't parse `{smiles}` as a molecule. Check the SMILES and try again.")
+        if mode == "Typing SMILES":
+            st.info("Pick an example or type a SMILES string in the sidebar to get started.")
         return
+
+    warnings = cu.input_warnings(mol, get_max_heavy_atoms())
+    if warnings:
+        st.warning(
+            "**Treat these results with caution:**\n\n" + "\n".join(f"- {w}" for w in warnings)
+        )
 
     solubility_section(mol, bundle)
     why_section(mol, bundle)
