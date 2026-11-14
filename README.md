@@ -93,16 +93,26 @@ The repo is ready for Streamlit Community Cloud: pinned packages in `requirement
 libraries RDKit needs for drawing in `packages.txt`, and the model committed. Deploy from
 share.streamlit.io with main file `app.py` and Python 3.13.
 
-## Project layout
+## The data
 
-| File | What it does |
-| --- | --- |
-| `app.py` | The Streamlit interface |
-| `chem_utils.py` | Chemistry and model code: features, predictions, alerts, logP map, domain check |
-| `train_model.py` | Trains and evaluates the model, saves it to `models/` |
-| `tests/` | pytest suite |
+**ESOL** is a benchmark of 1,128 small molecules with measured aqueous solubility. The repo includes the
+DeepChem copy as `data/delaney-processed.csv`, released by MoleculeNet under the MIT licence.
 
-## Data
+**AqSolDB** adds about 7,700 more compounds. `train_model.py` downloads it from the authors' GitHub
+repository when retraining. It is released under the MIT licence, Copyright (c) 2019 Murat Cihan Sorkun.
+The committed model file stores the training molecules' SMILES and logS values for the nearest-neighbour
+check, so it contains data from both datasets.
 
-- ESOL (Delaney, 2004), `data/delaney-processed.csv`, from [DeepChem / MoleculeNet](https://github.com/deepchem/deepchem)
-- AqSolDB (Sorkun et al., 2019), downloaded when retraining, from [github.com/mcsorkun/AqSolDB](https://github.com/mcsorkun/AqSolDB)
+- Delaney, J. S. *ESOL: Estimating Aqueous Solubility Directly from Molecular Structure.* J. Chem. Inf. Comput. Sci. 2004, 44, 1000-1005.
+- Sorkun, M. C.; Khetan, A.; Er, S. *AqSolDB, a curated reference set of aqueous solubility and 2D descriptors for a diverse set of compounds.* Sci. Data 2019, 6, 143.
+
+## What's in the repo
+
+- `app.py`: the Streamlit interface
+- `chem_utils.py`: chemistry and model code (features, predictions, alerts, logP map, domain check)
+- `train_model.py`: trains and evaluates the model, and saves it to `models/solubility_model.joblib`
+- `tests/`: the pytest suite, run by GitHub Actions on every push
+- `data/delaney-processed.csv`: the ESOL dataset
+- `docs/screenshots/`: the images in this README
+- `requirements.txt` and `packages.txt`: the Python packages and the system libraries for deployment
+- `LICENSE`: MIT licence
