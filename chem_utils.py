@@ -62,6 +62,87 @@ def canonical_smiles(mol):
     return Chem.MolToSmiles(mol)
 
 
+def check_smiles(text):
+    """Parse user input. Returns (mol, None) or (None, a plain-English reason it failed).
+
+    The reason is None with mol None only for empty input.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None, None
+    if any(ch.isspace() for ch in text):
+        first = text.split()[0]
+        return None, (
+            f"SMILES can't contain spaces: RDKit would read only `{first}` and ignore the rest. "
+            "To enter several pieces (a salt, say), join them with `.` instead."
+        )
+
+    mol = Chem.MolFromSmiles(text, sanitize=False)
+    if mol is None:
+        return None, syntax_problem(text)
+    if mol.GetNumAtoms() == 0:
+        return None, "This SMILES has no atoms."
+    try:
+        Chem.SanitizeMol(mol)
+    except Chem.AtomValenceException as err:
+        match = re.search(r"atom # (\d+) (\w+), (\d+)", str(err))
+        if match:
+            idx, symbol, valence = match.groups()
+            return None, (f"Atom {int(idx) + 1} ({symbol}) has {valence} bonds, "
+                          f"more than {symbol} can normally form. Check for an extra bond or atom.")
+        return None, "One atom has more bonds than it can normally form."
+    except (Chem.KekulizeException, Chem.AtomKekulizeException):
+        return None, (
+            "The aromatic ring can't be drawn with alternating single and double bonds. Check the "
+            "lowercase (aromatic) atoms: a five-membered ring like pyrrole needs `[nH]`, for example."
+        )
+    except Exception as err:
+        return None, f"RDKit couldn't interpret this structure ({err})."
+    return mol, None
+
+
+def syntax_problem(text):
+    """Best guess at why RDKit couldn't read a SMILES at all."""
+    if text.count("(") != text.count(")"):
+        return "The brackets don't match: every `(` needs a `)`."
+    if text.count("[") != text.count("]"):
+        return "The square brackets don't match: every `[` needs a `]`."
+    outside_brackets = re.sub(r"\[[^\]]*\]", "", text)
+    ring_labels = re.findall(r"%\d\d|\d", outside_brackets)
+    if any(ring_labels.count(label) % 2 for label in set(ring_labels)):
+        return "A ring isn't closed: each ring-closure number must appear twice, e.g. `C1CCCCC1`."
+    return "This isn't valid SMILES. Check the atom symbols and bond characters."
+
+
+def input_warnings(mol, max_heavy_atoms=None):
+    """Reasons a valid molecule may be outside what the model was trained on."""
+    warnings = []
+    fragments = len(Chem.GetMolFrags(mol))
+    if fragments > 1:
+        warnings.append(
+            f"It has {fragments} separate pieces (a salt or mixture). The model was trained on "
+            "single molecules, so all the pieces are treated as one."
+        )
+    unseen = sorted({a.GetSymbol() for a in mol.GetAtoms()} - set(ELEMENTS) - {"H"})
+    if unseen:
+        warnings.append(
+            f"It contains elements the model never saw in training ({', '.join(unseen)}), "
+            "so their effect on solubility isn't captured."
+        )
+    if not any(a.GetSymbol() == "C" for a in mol.GetAtoms()):
+        warnings.append("It has no carbon. The model was trained on organic compounds.")
+    if any(a.GetNumRadicalElectrons() for a in mol.GetAtoms()):
+        warnings.append("It contains a radical (an unpaired electron), which the training data doesn't cover.")
+    charge = Chem.GetFormalCharge(mol)
+    if charge and fragments == 1:
+        warnings.append(f"It carries a net charge of {charge:+d} with no counter-ion.")
+    if max_heavy_atoms and mol.GetNumHeavyAtoms() > max_heavy_atoms:
+        warnings.append(
+            f"It has {mol.GetNumHeavyAtoms()} heavy atoms, more than any training molecule ({max_heavy_atoms})."
+        )
+    return warnings
+
+
 def count_matches(mol, patterns):
     return sum(len(mol.GetSubstructMatches(p)) for p in patterns)
 
@@ -184,7 +265,12 @@ def logp_contributions(mol):
 
 
 def logp_heatmap_png(mol, size=400):
-    """Molecule shaded red where atoms raise logP and blue where they lower it."""
+    """Molecule shaded red where atoms raise logP and blue where they lower it.
+
+    Returns None for single-atom molecules, which RDKit can't draw as a map.
+    """
+    if mol.GetNumAtoms() < 2:
+        return None
     drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
     SimilarityMaps.GetSimilarityMapFromWeights(
         mol, logp_contributions(mol), draw2d=drawer, colorMap="bwr"
@@ -249,14 +335,14 @@ def bonds_between(mol, atoms):
 
 # Batch mode
 
-def predict_batch(smiles_list, bundle, catalogs, train_fps):
-    """One row of results per SMILES; invalid SMILES are kept and marked invalid."""
+def predict_batch(smiles_list, bundle, catalogs, train_fps, max_heavy_atoms=None):
+    """One row of results per SMILES; invalid ones are kept, with the reason in "problem"."""
     rows = []
     for smiles in smiles_list:
         smiles = "" if pd.isna(smiles) else str(smiles)
-        mol = parse_smiles(smiles)
+        mol, problem = check_smiles(smiles)
         if mol is None:
-            rows.append({"smiles": smiles, "valid": False})
+            rows.append({"smiles": smiles, "valid": False, "problem": problem or "Empty SMILES."})
             continue
         logS = predict_logS(mol, bundle)
         similarity, _ = nearest_neighbour(mol, train_fps)
@@ -271,5 +357,6 @@ def predict_batch(smiles_list, bundle, catalogs, train_fps):
             "alerts": "; ".join(a["name"] for a in structural_alerts(mol, catalogs)),
             "nearest_similarity": round(similarity, 2),
             "outside_domain": similarity < DOMAIN_THRESHOLD,
+            "warnings": " ".join(input_warnings(mol, max_heavy_atoms)),
         })
     return pd.DataFrame(rows)
