@@ -28,12 +28,15 @@ from chem_utils import (
     nearest_neighbour,
     parse_smiles,
     predict_logS,
+    predict_table,
     qed_score,
     solubility_label,
     structural_alerts,
 )
 
 st.set_page_config(page_title="Molecule Property Explorer", page_icon="🧪", layout="wide")
+
+BATCH_LIMIT = 1000  # rows per uploaded CSV
 
 EXAMPLES = {
     "Choose an example...": "",
@@ -71,7 +74,7 @@ def get_training_fingerprints():
 
 # ------------------------------------------------------------------ header
 st.title("🧪 Molecule Property Explorer")
-st.caption("Type a SMILES string or draw a molecule to see its predicted solubility, drug-likeness and structural alerts.")
+st.caption("Type or draw a molecule, or upload a CSV, to see predicted solubility, drug-likeness and structural alerts.")
 
 try:
     bundle = get_model()
@@ -83,7 +86,7 @@ except (FileNotFoundError, ValueError) as err:
 with st.sidebar:
     st.header("Input")
     example = st.selectbox("Examples", list(EXAMPLES.keys()))
-    mode = st.radio("Enter a molecule by", ["Typing SMILES", "Drawing it"], horizontal=True)
+    mode = st.radio("Enter molecules by", ["Typing SMILES", "Drawing it", "Uploading a CSV"])
     if mode == "Typing SMILES":
         smiles = st.text_input("SMILES", value=EXAMPLES[example], placeholder="e.g. c1ccccc1")
     st.divider()
@@ -96,6 +99,39 @@ with st.sidebar:
         f"- unseen ring frameworks: {cv['scaffold']['RMSE']:.2f} log units"
     )
     st.caption("Full analysis: [chem-ml-solubility](https://github.com/Ash679-ux/chem-ml-solubility)")
+
+if mode == "Uploading a CSV":
+    st.subheader("Batch predictions")
+    st.markdown(
+        f"Upload a CSV with a column called `smiles` (up to {BATCH_LIMIT:,} rows). "
+        "You'll get one row of results per molecule, ready to download."
+    )
+    upload = st.file_uploader("CSV file", type="csv")
+    if upload is None:
+        st.stop()
+    try:
+        data = pd.read_csv(upload)
+    except Exception as err:  # a bad file shouldn't crash the app
+        st.error(f"Couldn't read that file as CSV: {err}")
+        st.stop()
+    column = next((c for c in data.columns if c.strip().lower() == "smiles"), None)
+    if column is None:
+        st.error(f"No `smiles` column found. Columns in the file: {', '.join(map(str, data.columns))}.")
+        st.stop()
+    if len(data) > BATCH_LIMIT:
+        st.warning(f"The file has {len(data):,} rows; only the first {BATCH_LIMIT:,} are used.")
+    with st.spinner("Predicting..."):
+        results = predict_table(
+            data[column].head(BATCH_LIMIT), bundle, get_alert_catalogs(), get_training_fingerprints()
+        )
+    n_bad = int((~results["valid"]).sum())
+    st.success(f"Done: {len(results) - n_bad:,} molecules predicted"
+               + (f", {n_bad:,} invalid SMILES skipped." if n_bad else "."))
+    st.dataframe(results, hide_index=True, width="stretch")
+    st.download_button(
+        "Download results (CSV)", results.to_csv(index=False), "predictions.csv", "text/csv"
+    )
+    st.stop()
 
 if mode == "Drawing it":
     st.subheader("Draw a molecule")

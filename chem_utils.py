@@ -12,6 +12,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import pandas as pd
 from rdkit import Chem, DataStructs, RDLogger
 from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdFingerprintGenerator, rdMolDescriptors
 from rdkit.Chem.Draw import SimilarityMaps, rdMolDraw2D
@@ -273,6 +274,33 @@ def bonds_between(mol, atoms) -> list:
     atoms = set(atoms)
     return [b.GetIdx() for b in mol.GetBonds()
             if b.GetBeginAtomIdx() in atoms and b.GetEndAtomIdx() in atoms]
+
+
+# --------------------------------------------------------------- batch mode
+def predict_table(smiles_list, bundle: dict, catalogs: dict, train_fps) -> pd.DataFrame:
+    """One row of results per SMILES; invalid SMILES get a row saying so."""
+    rows = []
+    for smi in smiles_list:
+        smi = "" if pd.isna(smi) else str(smi)
+        mol = parse_smiles(smi)
+        if mol is None:
+            rows.append({"smiles": smi, "valid": False})
+            continue
+        logS = predict_logS(mol, bundle)
+        sim, _ = nearest_neighbour(mol, train_fps)
+        rows.append({
+            "smiles": smi,
+            "valid": True,
+            "logS": round(logS, 2),
+            "mg_per_mL": float(f"{logS_to_mg_per_ml(logS, mol):.3g}"),
+            "solubility": solubility_label(logS),
+            "QED": round(qed_score(mol), 2),
+            "Ro5_violations": lipinski_report(mol)["violations"],
+            "alerts": "; ".join(a["name"] for a in structural_alerts(mol, catalogs)),
+            "nearest_similarity": round(sim, 2),
+            "outside_domain": sim < DOMAIN_THRESHOLD,
+        })
+    return pd.DataFrame(rows)
 
 
 def feature_vector(mol) -> np.ndarray:
