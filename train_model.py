@@ -1,33 +1,18 @@
-"""
-train_model.py - train the solubility model and save it for the app.
+"""Train the solubility model and save it for the app. Run with: python train_model.py
 
-Usage:
-    python train_model.py
-
-Training data: ESOL (data/delaney-processed.csv) plus AqSolDB (Sorkun et al.,
-2019), which is downloaded once and cached as data/aqsoldb.csv. AqSolDB adds
-about 7,700 compounds, including about 170 with a P=O group, which is what lets
-the nPO feature work (section 11 of molecules.ipynb in chem-ml-solubility).
-
-Evaluation: every score is measured on ESOL molecules only, with the same folds
-as chem-ml-solubility (5-fold CV x 3 shuffles, random and scaffold folds), so
-the numbers are directly comparable with the original 0.709 / 0.804. AqSolDB is
-only ever added to the training side of each fold:
-  - every ESOL compound is removed from it first, matched on InChIKey
-    connectivity so stereoisomers are caught too;
-  - in scaffold folds, any AqSolDB compound sharing a ring framework with the
-    test fold is also removed, so "unseen frameworks" stays true.
-The final model is then fitted on all of ESOL + the cleaned AqSolDB.
-
-Model: histogram gradient boosting. Its settings were chosen once, not tuned
-against the test folds.
+Training data is ESOL plus AqSolDB (downloaded on first run). Every score is measured
+on ESOL with the same folds as chem-ml-solubility (5 folds x 3 shuffles, random and
+scaffold), so results compare directly with its 0.709 / 0.804. AqSolDB only ever joins
+the training folds: ESOL compounds are removed from it (including stereoisomers), and
+in scaffold folds so is anything sharing a test molecule's ring framework.
+The final model is then fitted on everything.
 """
 
 import os
-# Gradient boosting uses OpenMP threads. Using every core can make it crawl on
-# WSL (threads waiting on each other), so cap it. Must be set before sklearn is
-# imported. Override with e.g. OMP_NUM_THREADS=8 python train_model.py
+
+# Using every core can stall gradient boosting on WSL. Must be set before importing sklearn.
 os.environ.setdefault("OMP_NUM_THREADS", "4")
+
 from collections import defaultdict
 from pathlib import Path
 
@@ -42,17 +27,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-from chem_utils import (
-    DOMAIN_BANDS,
-    FEATURE_NAMES,
-    MODEL_PATH,
-    band_of,
-    canonical_smiles,
-    featurize,
-    fingerprint,
-    has_p_equals_o,
-    parse_smiles,
-)
+import chem_utils as cu
 
 DATA_DIR = Path(__file__).parent / "data"
 ESOL_CSV = DATA_DIR / "delaney-processed.csv"
@@ -60,7 +35,7 @@ AQSOLDB_CSV = DATA_DIR / "aqsoldb.csv"
 AQSOLDB_URL = "https://raw.githubusercontent.com/mcsorkun/AqSolDB/master/results/data_curated.csv"
 
 SEED = 42
-CV_SEEDS = [SEED, SEED + 1, SEED + 2]  # three different shuffles of the folds
+CV_SEEDS = [SEED, SEED + 1, SEED + 2]
 
 
 def make_model(seed=SEED):
@@ -70,82 +45,74 @@ def make_model(seed=SEED):
     )
 
 
-# ------------------------------------------------------------------- data
-def scaffold_of(mol) -> str:
+# Data
+
+def scaffold_of(mol):
     return MurckoScaffold.MurckoScaffoldSmiles(mol=mol)
 
 
-def load_esol() -> pd.DataFrame:
+def load_esol():
     raw = pd.read_csv(ESOL_CSV)
     df = pd.DataFrame({
         "smiles": raw["smiles"].str.strip(),
         "logS": raw["measured log solubility in mols per litre"],
     })
-    df["mol"] = df["smiles"].apply(parse_smiles)
+    df["mol"] = df["smiles"].apply(cu.parse_smiles)
     df = df.dropna(subset=["mol"]).reset_index(drop=True)
     df["inchikey"] = df["mol"].apply(Chem.MolToInchiKey)
     df["scaffold"] = df["mol"].apply(scaffold_of)
     return df
 
 
-def load_aqsoldb(esol: pd.DataFrame) -> pd.DataFrame:
-    """AqSolDB without salts/mixtures, duplicates or any ESOL compound."""
+def load_aqsoldb(esol):
+    """AqSolDB without salts, mixtures, duplicates or any ESOL compound."""
     if not AQSOLDB_CSV.exists():
         print("Downloading AqSolDB...")
         pd.read_csv(AQSOLDB_URL).to_csv(AQSOLDB_CSV, index=False)
     raw = pd.read_csv(AQSOLDB_CSV).rename(columns={"SMILES": "smiles", "Solubility": "logS"})
-    raw = raw[~raw["smiles"].str.contains(".", regex=False)]  # drop salts and mixtures
-    df = raw[["smiles", "logS"]].copy()
-    df["mol"] = df["smiles"].apply(parse_smiles)
+    df = raw.loc[~raw["smiles"].str.contains(".", regex=False), ["smiles", "logS"]].copy()
+    df["mol"] = df["smiles"].apply(cu.parse_smiles)
     df = df.dropna(subset=["mol"])
     df["inchikey"] = df["mol"].apply(Chem.MolToInchiKey)
     df = df[df["inchikey"] != ""].drop_duplicates(subset="inchikey")
-    # remove ESOL compounds, including stereoisomers: the first 14 InChIKey
-    # characters encode connectivity only
+    # The first 14 InChIKey characters encode connectivity only, so this also catches stereoisomers.
     esol_skeletons = set(esol["inchikey"].str[:14])
     df = df[~df["inchikey"].str[:14].isin(esol_skeletons)].reset_index(drop=True)
     df["scaffold"] = df["mol"].apply(scaffold_of)
     return df
 
 
-def feature_matrix(mols, desc="Featurising") -> np.ndarray:
-    rows = []
-    for m in tqdm(mols, desc=desc, unit="mol"):
-        feats = featurize(m)  # compute once per molecule, then pick the columns
-        rows.append([feats[name] for name in FEATURE_NAMES])
-    return np.array(rows)
+def feature_matrix(mols, desc):
+    return np.array([cu.feature_vector(m)[0] for m in tqdm(mols, desc=desc, unit="mol")])
 
 
-# -------------------------------------------------------------- evaluation
+# Evaluation
+
 def scaffold_folds(mols, n_splits=5, seed=SEED):
-    """Split into folds so molecules sharing a ring framework stay in the same fold."""
+    """Folds in which molecules sharing a ring framework always stay together."""
     groups = defaultdict(list)
-    for i, m in enumerate(mols):
-        groups[scaffold_of(m) or f"ring-free {i}"].append(i)  # ring-free molecules share no framework
+    for i, mol in enumerate(mols):
+        groups[scaffold_of(mol) or f"ring-free {i}"].append(i)
     keys = list(groups)
     fold_of = np.empty(len(mols), dtype=int)
     sizes = np.zeros(n_splits, dtype=int)
     for k in np.random.default_rng(seed).permutation(len(keys)):
-        f = int(np.argmin(sizes))  # put each group in the currently smallest fold
-        fold_of[groups[keys[k]]] = f
-        sizes[f] += len(groups[keys[k]])
+        fold = int(np.argmin(sizes))
+        fold_of[groups[keys[k]]] = fold
+        sizes[fold] += len(groups[keys[k]])
     idx = np.arange(len(mols))
     return [(idx[fold_of != f], idx[fold_of == f]) for f in range(n_splits)]
 
 
 def cross_validate(esol, X_esol, aq, X_aq):
-    """Scores on ESOL test folds, with AqSolDB added to each training fold.
-
-    Also returns the random-fold errors grouped by each test molecule's
-    similarity to its training fold, for the app's applicability-domain check.
-    """
-    y = esol["logS"].to_numpy()
-    y_aq = aq["logS"].to_numpy()
-    is_po = esol["mol"].apply(has_p_equals_o).to_numpy()
-    fps_esol = [fingerprint(m) for m in esol["mol"]]
-    fps_aq = [fingerprint(m) for m in aq["mol"]]
-    sims, errors = [], []  # random folds only
+    """Scores on ESOL test folds, plus random-fold error by similarity to the training fold."""
+    y, y_aq = esol["logS"].to_numpy(), aq["logS"].to_numpy()
+    is_phosphoryl = esol["mol"].apply(cu.has_phosphoryl).to_numpy()
+    fps_esol = [cu.fingerprint(m) for m in esol["mol"]]
+    fps_aq = [cu.fingerprint(m) for m in aq["mol"]]
+    similarities, errors = [], []
     results = {}
+
     for split in ["random", "scaffold"]:
         rmses, r2s, po_maes = [], [], []
         for seed in tqdm(CV_SEEDS, desc=f"CV, {split} folds", unit="shuffle"):
@@ -153,84 +120,93 @@ def cross_validate(esol, X_esol, aq, X_aq):
                 folds = list(KFold(n_splits=5, shuffle=True, random_state=seed).split(X_esol))
             else:
                 folds = scaffold_folds(esol["mol"].tolist(), seed=seed)
+
             pred = np.empty(len(y))
             for train_idx, test_idx in folds:
                 keep = np.ones(len(aq), dtype=bool)
-                if split == "scaffold":  # no AqSolDB compound sharing a test-fold framework
+                if split == "scaffold":
                     test_scaffolds = {s for s in esol["scaffold"].iloc[test_idx] if s}
                     keep = ~aq["scaffold"].isin(test_scaffolds).to_numpy()
                 X_train = np.vstack([X_esol[train_idx], X_aq[keep]])
                 y_train = np.concatenate([y[train_idx], y_aq[keep]])
                 pred[test_idx] = make_model(seed).fit(X_train, y_train).predict(X_esol[test_idx])
+
                 if split == "random":
                     train_fps = [fps_esol[i] for i in train_idx] + fps_aq
                     for i in test_idx:
-                        sims.append(max(DataStructs.BulkTanimotoSimilarity(fps_esol[i], train_fps)))
+                        similarities.append(max(DataStructs.BulkTanimotoSimilarity(fps_esol[i], train_fps)))
                         errors.append(y[i] - pred[i])
-            err = y - pred
+
             rmses.append(np.sqrt(mean_squared_error(y, pred)))
             r2s.append(r2_score(y, pred))
-            po_maes.append(np.abs(err[is_po]).mean())
+            po_maes.append(np.abs(y - pred)[is_phosphoryl].mean())
+
         results[split] = {
             "RMSE": float(np.mean(rmses)),
             "RMSE_sd": float(np.std(rmses, ddof=1)),
             "R2": float(np.mean(r2s)),
             "MAE_PO": float(np.mean(po_maes)),
         }
-        print(f"{split:8s} folds:  RMSE = {results[split]['RMSE']:.3f} "
-              f"(sd {results[split]['RMSE_sd']:.3f})   R^2 = {results[split]['R2']:.3f}   "
-              f"MAE on {int(is_po.sum())} P=O compounds = {results[split]['MAE_PO']:.2f}")
+        r = results[split]
+        print(f"{split:8s} folds: RMSE = {r['RMSE']:.3f} (sd {r['RMSE_sd']:.3f}), R^2 = {r['R2']:.3f}, "
+              f"MAE on {int(is_phosphoryl.sum())} P=O compounds = {r['MAE_PO']:.2f}")
 
-    sims, errors = np.array(sims), np.array(errors)
+    return results, error_by_similarity(np.array(similarities), np.array(errors))
+
+
+def error_by_similarity(similarities, errors):
     domain = []
-    for lo, hi in DOMAIN_BANDS:
-        in_band = np.array([band_of(s) == (lo, hi) for s in sims])
+    bands = np.array([cu.band_of(s) for s in similarities])
+    for lo, hi in cu.DOMAIN_BANDS:
+        in_band = (bands[:, 0] == lo) & (bands[:, 1] == hi)
         n = int(in_band.sum()) // len(CV_SEEDS)  # molecules, not predictions
         rmse = float(np.sqrt((errors[in_band] ** 2).mean())) if in_band.any() else None
         domain.append({"lo": lo, "hi": hi, "n": n, "RMSE": rmse})
         print(f"  similarity {lo:.1f}-{hi:.1f}: {n:4d} molecules, RMSE = {rmse:.2f}")
-    return results, domain
+    return domain
 
 
-# -------------------------------------------------------------------- main
+# Training
+
 def main():
     esol = load_esol()
     aq = load_aqsoldb(esol)
-    print(f"ESOL: {len(esol)} molecules   AqSolDB after cleaning: {len(aq)} molecules")
+    print(f"ESOL: {len(esol)} molecules, AqSolDB after cleaning: {len(aq)} molecules")
 
-    X_esol = feature_matrix(esol["mol"], desc="Featurising ESOL")
-    X_aq = feature_matrix(aq["mol"], desc="Featurising AqSolDB")
+    X_esol = feature_matrix(esol["mol"], "Featurising ESOL")
+    X_aq = feature_matrix(aq["mol"], "Featurising AqSolDB")
 
-    print("Cross-validating on ESOL (5 folds x 3 shuffles, random and scaffold)...")
+    print("Cross-validating on ESOL...")
     cv, domain = cross_validate(esol, X_esol, aq, X_aq)
 
-    # final model uses every molecule
     print("Training the final model and measuring feature importances...")
     X = np.vstack([X_esol, X_aq])
     y = np.concatenate([esol["logS"].to_numpy(), aq["logS"].to_numpy()])
     model = make_model().fit(X, y)
 
-    # gradient boosting has no built-in importances like a random forest, so
-    # measure how much the error grows when each feature is shuffled, then
-    # scale so the importances add up to 1 for display
+    # Gradient boosting has no built-in importances, so measure how much shuffling each feature hurts.
     perm = permutation_importance(model, X, y, n_repeats=5, random_state=SEED, n_jobs=-1)
     raw = np.clip(perm.importances_mean, 0, None)
-    importances = dict(zip(FEATURE_NAMES, (raw / raw.sum()).round(3).tolist()))
-    top = sorted(importances.items(), key=lambda kv: -kv[1])[:5]
-    print("Top features:", top)
+    importances = dict(zip(cu.FEATURE_NAMES, (raw / raw.sum()).round(3).tolist()))
+    print("Top features:", sorted(importances.items(), key=lambda kv: -kv[1])[:5])
 
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(
-        {"model": model, "features": FEATURE_NAMES, "importances": importances,
-         "cv": cv, "n_train": len(y), "domain": domain,
-         "train": {  # for the app's nearest-neighbour lookup
-             "smiles": [canonical_smiles(m) for m in esol["mol"]] + [canonical_smiles(m) for m in aq["mol"]],
-             "logS": y.tolist(),
-             "source": ["ESOL"] * len(esol) + ["AqSolDB"] * len(aq),
-         }},
-        MODEL_PATH,
-    )
-    print(f"Saved model ({len(y)} training molecules) to {MODEL_PATH}")
+    mols = list(esol["mol"]) + list(aq["mol"])
+    bundle = {
+        "model": model,
+        "features": cu.FEATURE_NAMES,
+        "importances": importances,
+        "cv": cv,
+        "domain": domain,
+        "n_train": len(y),
+        "train": {
+            "smiles": [cu.canonical_smiles(m) for m in mols],
+            "logS": y.tolist(),
+            "source": ["ESOL"] * len(esol) + ["AqSolDB"] * len(aq),
+        },
+    }
+    cu.MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(bundle, cu.MODEL_PATH)
+    print(f"Saved model ({len(y)} training molecules) to {cu.MODEL_PATH}")
 
 
 if __name__ == "__main__":

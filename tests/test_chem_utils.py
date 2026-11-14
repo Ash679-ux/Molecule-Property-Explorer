@@ -74,11 +74,11 @@ def test_mg_per_ml_conversion():
 
 # ---------------------------------------------------------- drug-likeness
 def test_aspirin_passes_rule_of_five():
-    assert cu.lipinski_report(cu.parse_smiles(ASPIRIN))["drug_like"]
+    assert cu.rule_of_five(cu.parse_smiles(ASPIRIN))["drug_like"]
 
 
 def test_erythromycin_fails_rule_of_five():
-    report = cu.lipinski_report(cu.parse_smiles(ERYTHROMYCIN))
+    report = cu.rule_of_five(cu.parse_smiles(ERYTHROMYCIN))
     assert report["violations"] >= 2 and not report["drug_like"]
 
 
@@ -130,7 +130,7 @@ def test_bands_cover_zero_to_one():
 
 
 # --------------------------------------------------------------- batch mode
-def test_predict_table_handles_invalid_rows(bundle, catalogs, train_fps):
-    table = cu.predict_table([ASPIRIN, "not smiles", None], bundle, catalogs, train_fps)
+def test_predict_batch_handles_invalid_rows(bundle, catalogs, train_fps):
+    table = cu.predict_batch([ASPIRIN, "not smiles", None], bundle, catalogs, train_fps)
     assert list(table["valid"]) == [True, False, False]
     assert table.loc[0, "Ro5_violations"] == 0

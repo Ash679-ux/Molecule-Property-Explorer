@@ -1,10 +1,6 @@
-"""
-chem_utils.py - the chemistry "engine" behind the app.
+"""Chemistry and model code for the Molecule Property Explorer.
 
-Everything RDKit/ML lives here, so app.py only deals with the interface.
-That separation makes this file easy to test on its own:
-
-    python chem_utils.py
+Everything that uses RDKit or the model lives here; app.py only handles the interface.
 """
 
 import re
@@ -18,23 +14,11 @@ from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdFingerprintGenerat
 from rdkit.Chem.Draw import SimilarityMaps, rdMolDraw2D
 from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
-# RDKit prints noisy warnings for bad SMILES; we handle errors ourselves.
-RDLogger.DisableLog("rdApp.*")
+RDLogger.DisableLog("rdApp.*")  # invalid SMILES are reported by the app instead
 
-MODEL_PATH = Path(__file__).parent / "models" / "esol_model.joblib"
+MODEL_PATH = Path(__file__).parent / "models" / "solubility_model.joblib"
 
-# Features: the seven descriptors from my chem-ml-solubility analysis
-# (molecules.ipynb), plus nPO (the number of P=O groups, from section 11 of
-# that notebook), plus extra descriptors and element counts that lowered RMSE
-# in benchmarking. Change FEATURE_NAMES and featurize() together, then retrain.
-ELEMENTS = ["C", "N", "O", "S", "P", "F", "Cl", "Br", "I"]  # every element in ESOL
-FEATURE_NAMES = (
-    ["MolWt", "LogP", "HBD", "HBA", "RotBonds", "TPSA", "AromProp", "nPO",
-     "nPS", "FracCSP3", "AromRings", "Rings", "MolMR", "HeavyAtoms", "LabuteASA", "BertzCT"]
-    + [f"n{el}" for el in ELEMENTS]
-)
-
-# Plain-English names for the app's descriptor table.
+ELEMENTS = ["C", "N", "O", "S", "P", "F", "Cl", "Br", "I"]
 FEATURE_LABELS = {
     "MolWt": "Molecular weight (g/mol)",
     "LogP": "logP (Crippen)",
@@ -54,42 +38,45 @@ FEATURE_LABELS = {
     "BertzCT": "Structural complexity (Bertz)",
     **{f"n{el}": f"{el} atoms" for el in ELEMENTS},
 }
+FEATURE_NAMES = list(FEATURE_LABELS)
 
-# P=O and P=S groups, however the SMILES draws them: as a double bond, or as
-# P+ single-bonded to O- / S- (some entries in AqSolDB use this form).
-# Same patterns as section 11 of molecules.ipynb.
-PO_PATTERNS = [Chem.MolFromSmarts("[#15]=[#8]"), Chem.MolFromSmarts("[#15+]-[#8-]")]
-PS_PATTERNS = [Chem.MolFromSmarts("[#15]=[#16]"), Chem.MolFromSmarts("[#15+]-[#16-]")]
+# Datasets write P=O either as a double bond or as charge-separated P+-O-.
+PHOSPHORYL = [Chem.MolFromSmarts("[#15]=[#8]"), Chem.MolFromSmarts("[#15+]-[#8-]")]
+THIOPHOSPHORYL = [Chem.MolFromSmarts("[#15]=[#16]"), Chem.MolFromSmarts("[#15+]-[#16-]")]
 
-
-def count_matches(mol, patterns) -> int:
-    """Total number of matches of any of the SMARTS patterns in mol."""
-    return sum(len(mol.GetSubstructMatches(p)) for p in patterns)
+MORGAN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+DOMAIN_THRESHOLD = 0.3  # below this similarity the cross-validated error rises clearly
+DOMAIN_BANDS = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.7), (0.7, 1.0)]
 
 
-# ---------------------------------------------------------------- parsing
-def parse_smiles(smiles: str):
-    """Return an RDKit Mol, or None if the SMILES is empty/invalid."""
+# Parsing and features
+
+def parse_smiles(smiles):
+    """RDKit molecule, or None if the SMILES is empty or invalid."""
     if not smiles or not smiles.strip():
         return None
     return Chem.MolFromSmiles(smiles.strip())
 
 
-def canonical_smiles(mol) -> str:
+def canonical_smiles(mol):
     return Chem.MolToSmiles(mol)
 
 
-# ------------------------------------------------------------- featurising
-def aromatic_proportion(mol) -> float:
-    """Fraction of heavy atoms that are aromatic."""
+def count_matches(mol, patterns):
+    return sum(len(mol.GetSubstructMatches(p)) for p in patterns)
+
+
+def has_phosphoryl(mol):
+    """True for phosphates and phosphonates, historically the model's hardest class."""
+    return count_matches(mol, PHOSPHORYL) > 0
+
+
+def aromatic_proportion(mol):
     heavy = mol.GetNumHeavyAtoms()
-    if heavy == 0:
-        return 0.0
-    aromatic = sum(1 for atom in mol.GetAtoms() if atom.GetIsAromatic())
-    return aromatic / heavy
+    return sum(atom.GetIsAromatic() for atom in mol.GetAtoms()) / heavy if heavy else 0.0
 
 
-def element_counts(mol) -> dict:
+def element_counts(mol):
     counts = dict.fromkeys(ELEMENTS, 0)
     for atom in mol.GetAtoms():
         if atom.GetSymbol() in counts:
@@ -97,10 +84,9 @@ def element_counts(mol) -> dict:
     return {f"n{el}": n for el, n in counts.items()}
 
 
-def featurize(mol) -> dict:
-    """Turn a molecule into the numbers the model was trained on."""
+def featurize(mol):
+    """The model's 25 descriptors, in FEATURE_NAMES order."""
     return {
-        # the seven descriptors from chem-ml-solubility
         "MolWt": Descriptors.MolWt(mol),
         "LogP": Crippen.MolLogP(mol),
         "HBD": Lipinski.NumHDonors(mol),
@@ -108,10 +94,8 @@ def featurize(mol) -> dict:
         "RotBonds": Lipinski.NumRotatableBonds(mol),
         "TPSA": rdMolDescriptors.CalcTPSA(mol),
         "AromProp": aromatic_proportion(mol),
-        # the P=O count that fixed most of the phosphate/phosphonate error
-        "nPO": count_matches(mol, PO_PATTERNS),
-        # extras
-        "nPS": count_matches(mol, PS_PATTERNS),
+        "nPO": count_matches(mol, PHOSPHORYL),
+        "nPS": count_matches(mol, THIOPHOSPHORYL),
         "FracCSP3": rdMolDescriptors.CalcFractionCSP3(mol),
         "AromRings": rdMolDescriptors.CalcNumAromaticRings(mol),
         "Rings": rdMolDescriptors.CalcNumRings(mol),
@@ -123,23 +107,97 @@ def featurize(mol) -> dict:
     }
 
 
-def has_p_equals_o(mol) -> bool:
-    """True for phosphates/phosphonates, historically this model's hardest class."""
-    return count_matches(mol, PO_PATTERNS) > 0
+def feature_vector(mol):
+    features = featurize(mol)
+    return np.array([[features[name] for name in FEATURE_NAMES]])
 
 
-# ---------------------------------------------------------- drug-likeness
-def lipinski_report(mol) -> dict:
-    """Lipinski's rule of five (Lipinski et al., 1997).
+# Model
 
-    Uses the rule's original definitions: H-bond donors = number of NH and OH
-    groups, H-bond acceptors = number of N and O atoms. These differ from the
-    HBD/HBA descriptors the solubility model uses (RDKit's more chemically
-    careful counts), e.g. caffeine has 6 N + O but only 3 RDKit acceptors.
-    A molecule is usually called drug-like (orally) with at most one violation.
+def load_model(path=MODEL_PATH):
+    """The bundle saved by train_model.py: the model plus its evaluation results."""
+    if not path.exists():
+        raise FileNotFoundError(f"No model found at {path}. Run `python train_model.py` first.")
+    bundle = joblib.load(path)
+    if bundle["features"] != FEATURE_NAMES:
+        raise ValueError("The saved model uses different features. Run `python train_model.py`.")
+    return bundle
+
+
+def predict_logS(mol, bundle):
+    """Predicted log10 solubility in mol/L."""
+    return float(bundle["model"].predict(feature_vector(mol))[0])
+
+
+def solubility_label(logS):
+    """Rough plain-English band, for readability only."""
+    if logS >= 0:
+        return "Highly soluble"
+    if logS >= -2:
+        return "Soluble"
+    if logS >= -4:
+        return "Moderately soluble"
+    if logS >= -6:
+        return "Poorly soluble"
+    return "Practically insoluble"
+
+
+def logS_to_mg_per_ml(logS, mol):
+    """mol/L x g/mol = g/L, which equals mg/mL."""
+    return 10 ** logS * Descriptors.MolWt(mol)
+
+
+# Applicability domain
+
+def fingerprint(mol):
+    return MORGAN.GetFingerprint(mol)
+
+
+def nearest_neighbour(mol, train_fps):
+    """(Tanimoto similarity, index) of the most similar training molecule."""
+    sims = DataStructs.BulkTanimotoSimilarity(fingerprint(mol), train_fps)
+    idx = int(np.argmax(sims))
+    return sims[idx], idx
+
+
+def band_of(similarity):
+    for lo, hi in DOMAIN_BANDS:
+        if lo <= similarity < hi:
+            return lo, hi
+    return DOMAIN_BANDS[-1]  # similarity of exactly 1.0
+
+
+# Why view
+
+def logp_contributions(mol):
+    """Each heavy atom's share of Crippen logP, with its hydrogens' shares added in.
+
+    Sums exactly to Crippen.MolLogP(mol) (Wildman & Crippen, 1999).
     """
+    with_h = Chem.AddHs(mol)  # heavy atoms keep their indices
+    contribs = [c[0] for c in rdMolDescriptors._CalcCrippenContribs(with_h)]
+    weights = [0.0] * mol.GetNumAtoms()
+    for atom in with_h.GetAtoms():
+        owner = atom.GetNeighbors()[0] if atom.GetAtomicNum() == 1 else atom
+        weights[owner.GetIdx()] += contribs[atom.GetIdx()]
+    return weights
+
+
+def logp_heatmap_png(mol, size=400):
+    """Molecule shaded red where atoms raise logP and blue where they lower it."""
+    drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+    SimilarityMaps.GetSimilarityMapFromWeights(
+        mol, logp_contributions(mol), draw2d=drawer, colorMap="bwr"
+    )
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText()
+
+
+# Drug-likeness
+
+def rule_of_five(mol):
+    """Lipinski's rule of five with the original counts: NH + OH donors, N + O acceptors."""
     rules = [
-        # (property, value, limit)
         ("Molecular weight (g/mol)", Descriptors.MolWt(mol), 500),
         ("logP (Crippen)", Crippen.MolLogP(mol), 5),
         ("H-bond donors (NH + OH)", Lipinski.NHOHCount(mol), 5),
@@ -153,88 +211,15 @@ def lipinski_report(mol) -> dict:
     return {"rows": rows, "violations": violations, "drug_like": violations <= 1}
 
 
-def qed_score(mol) -> float:
-    """Quantitative Estimate of Drug-likeness (Bickerton et al., 2012), 0 to 1.
-
-    Combines eight properties (MW, logP, H-bond donors/acceptors, polar surface
-    area, rotatable bonds, aromatic rings, structural alerts) into one score.
-    Higher is more drug-like.
-    """
+def qed_score(mol):
+    """Quantitative Estimate of Drug-likeness (Bickerton et al., 2012), from 0 to 1."""
     return QED.qed(mol)
 
 
-# ----------------------------------------------------- applicability domain
-# Morgan fingerprints (radius 2, i.e. ECFP4-like) compared with Tanimoto
-# similarity. Below DOMAIN_THRESHOLD the model's cross-validated error rises
-# clearly (see the "domain" table that train_model.py saves in the bundle).
-MORGAN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
-DOMAIN_THRESHOLD = 0.3
-DOMAIN_BANDS = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.7), (0.7, 1.0)]
+# Structural alerts
 
-
-def fingerprint(mol):
-    return MORGAN.GetFingerprint(mol)
-
-
-def nearest_neighbour(mol, train_fps) -> tuple:
-    """(similarity, index) of the most similar training molecule."""
-    sims = DataStructs.BulkTanimotoSimilarity(fingerprint(mol), train_fps)
-    idx = int(np.argmax(sims))
-    return sims[idx], idx
-
-
-def band_of(similarity: float) -> tuple:
-    """The DOMAIN_BANDS entry a similarity falls in (1.0 goes in the top band)."""
-    for lo, hi in DOMAIN_BANDS:
-        if lo <= similarity < hi:
-            return (lo, hi)
-    return DOMAIN_BANDS[-1]
-
-
-# ------------------------------------------------------------- "why" view
-def logp_contributions(mol) -> list:
-    """Each heavy atom's contribution to Crippen logP (Wildman & Crippen, 1999).
-
-    Crippen logP is a sum of atom contributions, hydrogens included. Each
-    hydrogen's share is added to the atom it is bonded to, so the list has one
-    value per heavy atom and sums exactly to Crippen.MolLogP(mol).
-    """
-    with_h = Chem.AddHs(mol)
-    contribs = [c[0] for c in rdMolDescriptors._CalcCrippenContribs(with_h)]
-    weights = [0.0] * mol.GetNumAtoms()
-    for atom in with_h.GetAtoms():
-        idx = atom.GetIdx()
-        if atom.GetAtomicNum() == 1:
-            weights[atom.GetNeighbors()[0].GetIdx()] += contribs[idx]
-        else:
-            weights[idx] += contribs[idx]  # heavy atoms keep their indices after AddHs
-    return weights
-
-
-def logp_heatmap_png(mol, size: int = 400) -> bytes:
-    """PNG of the molecule shaded by logP contribution.
-
-    Red = raises logP (greasy, lowers solubility); blue = lowers logP (polar,
-    raises solubility).
-    """
-    drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
-    SimilarityMaps.GetSimilarityMapFromWeights(
-        mol, logp_contributions(mol), draw2d=drawer, colorMap="bwr"
-    )
-    drawer.FinishDrawing()
-    return drawer.GetDrawingText()
-
-
-# ------------------------------------------------------- structural alerts
-def build_alert_catalogs() -> dict:
-    """PAINS and Brenk filter catalogs from RDKit, keyed by source name.
-
-    PAINS (Baell & Holloway, 2010): 480 substructures that often give false
-    positives in high-throughput screening assays.
-    Brenk (Brenk et al., 2008): 105 substructures that are reactive, toxic or
-    otherwise unattractive in drug candidates.
-    Building them takes a moment, so the app builds them once and caches them.
-    """
+def build_alert_catalogs():
+    """RDKit's PAINS (480 patterns) and Brenk (105 patterns) catalogs."""
     catalogs = {}
     for name, which in [("PAINS", FilterCatalogParams.FilterCatalogs.PAINS),
                         ("Brenk", FilterCatalogParams.FilterCatalogs.BRENK)]:
@@ -244,143 +229,47 @@ def build_alert_catalogs() -> dict:
     return catalogs
 
 
-def structural_alerts(mol, catalogs: dict) -> list:
-    """Every alert that matches mol, with the atoms it matched.
-
-    Returns a list of {"name", "source", "atoms"}, where atoms is a sorted
-    list of atom indices in mol (an alert can match in several places;
-    all of them are included).
-    """
+def structural_alerts(mol, catalogs):
+    """Each matching alert as {"name", "source", "atoms"} (all places it matches)."""
     alerts = []
     for source, catalog in catalogs.items():
         for entry in catalog.GetMatches(mol):
-            atoms = set()
-            for match in entry.GetFilterMatches(mol):
-                # each pair is (atom in the alert pattern, atom in our molecule)
-                atoms.update(pair.target for pair in match.atomPairs)
-            # PAINS names end in the number of hits in the original screen,
-            # e.g. "ene_rhod_A(235)"; drop it for display
+            atoms = {pair.target for match in entry.GetFilterMatches(mol) for pair in match.atomPairs}
+            # PAINS names end in their hit count from the original screen, e.g. "ene_rhod_A(235)"
             name = re.sub(r"\(\d+\)$", "", entry.GetDescription()).replace("_", " ")
-            alerts.append({
-                "name": name,
-                "source": source,
-                "atoms": sorted(atoms),
-            })
+            alerts.append({"name": name, "source": source, "atoms": sorted(atoms)})
     return alerts
 
 
-def bonds_between(mol, atoms) -> list:
-    """Indices of bonds whose two ends are both in atoms, for highlighting."""
+def bonds_between(mol, atoms):
     atoms = set(atoms)
     return [b.GetIdx() for b in mol.GetBonds()
             if b.GetBeginAtomIdx() in atoms and b.GetEndAtomIdx() in atoms]
 
 
-# --------------------------------------------------------------- batch mode
-def predict_table(smiles_list, bundle: dict, catalogs: dict, train_fps) -> pd.DataFrame:
-    """One row of results per SMILES; invalid SMILES get a row saying so."""
+# Batch mode
+
+def predict_batch(smiles_list, bundle, catalogs, train_fps):
+    """One row of results per SMILES; invalid SMILES are kept and marked invalid."""
     rows = []
-    for smi in smiles_list:
-        smi = "" if pd.isna(smi) else str(smi)
-        mol = parse_smiles(smi)
+    for smiles in smiles_list:
+        smiles = "" if pd.isna(smiles) else str(smiles)
+        mol = parse_smiles(smiles)
         if mol is None:
-            rows.append({"smiles": smi, "valid": False})
+            rows.append({"smiles": smiles, "valid": False})
             continue
         logS = predict_logS(mol, bundle)
-        sim, _ = nearest_neighbour(mol, train_fps)
+        similarity, _ = nearest_neighbour(mol, train_fps)
         rows.append({
-            "smiles": smi,
+            "smiles": smiles,
             "valid": True,
             "logS": round(logS, 2),
             "mg_per_mL": float(f"{logS_to_mg_per_ml(logS, mol):.3g}"),
             "solubility": solubility_label(logS),
             "QED": round(qed_score(mol), 2),
-            "Ro5_violations": lipinski_report(mol)["violations"],
+            "Ro5_violations": rule_of_five(mol)["violations"],
             "alerts": "; ".join(a["name"] for a in structural_alerts(mol, catalogs)),
-            "nearest_similarity": round(sim, 2),
-            "outside_domain": sim < DOMAIN_THRESHOLD,
+            "nearest_similarity": round(similarity, 2),
+            "outside_domain": similarity < DOMAIN_THRESHOLD,
         })
     return pd.DataFrame(rows)
-
-
-def feature_vector(mol) -> np.ndarray:
-    feats = featurize(mol)
-    return np.array([[feats[name] for name in FEATURE_NAMES]])
-
-
-# ------------------------------------------------------------------ model
-def load_model(path: Path = MODEL_PATH) -> dict:
-    """Load the bundle saved by train_model.py.
-
-    The bundle is a dict with keys "model", "features", "importances", "cv"
-    (cross-validated RMSE/R2/P=O MAE for random and scaffold folds),
-    "n_train" (molecules in the final training set), "train" (their SMILES,
-    measured logS and source dataset) and "domain" (cross-validated RMSE by
-    similarity band); see train_model.py.
-    """
-    if not path.exists():
-        raise FileNotFoundError(
-            f"No model found at {path}. Run `python train_model.py` first."
-        )
-    bundle = joblib.load(path)
-    if bundle["features"] != FEATURE_NAMES:
-        raise ValueError(
-            "Saved model was trained on different features than featurize() "
-            "produces. Retrain with `python train_model.py`."
-        )
-    return bundle
-
-
-def predict_logS(mol, bundle: dict) -> float:
-    """Predicted log10 solubility in mol/L."""
-    return float(bundle["model"].predict(feature_vector(mol))[0])
-
-
-# ------------------------------------------------------- interpretation
-def solubility_label(logS: float) -> str:
-    """Rough plain-English band for a logS value (mol/L).
-
-    These cut-offs are approximate and are for readability only.
-    """
-    if logS >= 0:
-        return "Highly soluble"
-    if logS >= -2:
-        return "Soluble"
-    if logS >= -4:
-        return "Moderately soluble"
-    if logS >= -6:
-        return "Poorly soluble"
-    return "Practically insoluble"
-
-
-def logS_to_mg_per_ml(logS: float, mol) -> float:
-    """Convert logS (mol/L) to mg/mL: (mol/L) x (g/mol) = g/L = mg/mL."""
-    return (10 ** logS) * Descriptors.MolWt(mol)
-
-
-# ------------------------------------------------------------ smoke test
-if __name__ == "__main__":
-    bundle = load_model()
-    catalogs = build_alert_catalogs()
-    tests = {
-        "benzene": "c1ccccc1",
-        "aspirin": "CC(=O)Oc1ccccc1C(=O)O",
-        "caffeine": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
-        "glucose": "OCC1OC(O)C(O)C(O)C1O",
-        "triethyl phosphate": "CCOP(=O)(OCC)OCC",
-        "rhodanine (PAINS)": "O=C1NC(=S)SC1=Cc1ccccc1",
-        "not a molecule": "this_is_not_smiles",
-    }
-    for name, smi in tests.items():
-        mol = parse_smiles(smi)
-        if mol is None:
-            print(f"{name:20s}  invalid SMILES (correctly rejected)")
-            continue
-        logS = predict_logS(mol, bundle)
-        flag = "  [P=O warning]" if has_p_equals_o(mol) else ""
-        lip = lipinski_report(mol)
-        print(f"{name:20s}  logS = {logS:6.2f}  ({solubility_label(logS)})  "
-              f"QED = {qed_score(mol):.2f}  Ro5 violations = {lip['violations']}{flag}")
-        for alert in structural_alerts(mol, catalogs):
-            print(f"{'':22s}{alert['source']} alert: {alert['name']} "
-                  f"({len(alert['atoms'])} atoms)")
