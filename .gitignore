@@ -3,16 +3,14 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Jupyter / OS
 .ipynb_checkpoints/
 .DS_Store
 
-# AqSolDB: downloaded by train_model.py on first run
+# Downloaded by train_model.py
 data/aqsoldb.csv
 
-# Trained model: regenerate with `python train_model.py` (22 MB, changes every retrain)
-models/*.joblib
-
-# Streamlit secrets (never commit)
+# Streamlit secrets
 .streamlit/secrets.toml
