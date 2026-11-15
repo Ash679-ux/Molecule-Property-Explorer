@@ -6,7 +6,7 @@ or upload a CSV of many.
 
 It builds on my earlier analysis project, [chem-ml-solubility](https://github.com/Ash679-ux/chem-ml-solubility).
 
-> Live demo: _link coming after deployment_
+**Live app: [molecule-explorer.streamlit.app](https://molecule-explorer.streamlit.app/)**
 
 ![Aspirin's structure, predicted solubility and descriptors](docs/screenshots/overview.png)
 
@@ -98,9 +98,10 @@ trained it. On WSL, training uses 4 threads, since using every core can stall it
 
 ## Deploying
 
-The repo is ready for Streamlit Community Cloud: pinned packages in `requirements.txt`, the system
-libraries RDKit needs for drawing in `packages.txt`, and the model committed. Deploy from
-share.streamlit.io with main file `app.py` and Python 3.13.
+The app runs on Streamlit Community Cloud and redeploys automatically when `main` changes. The repo has
+what the server needs: pinned packages in `requirements.txt`, the system libraries RDKit needs for drawing
+in `packages.txt`, and the trained model. To deploy your own copy, use share.streamlit.io with main file
+`app.py` and Python 3.13.
 
 ## The data
 
