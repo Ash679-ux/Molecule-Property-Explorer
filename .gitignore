@@ -5,12 +5,17 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Jupyter / OS
+# Editors and operating systems
+.vscode/
+.idea/
 .ipynb_checkpoints/
 .DS_Store
+Thumbs.db
+*:Zone.Identifier
 
 # Downloaded by train_model.py
 data/aqsoldb.csv
 
-# Streamlit secrets
+# Secrets
+.env
 .streamlit/secrets.toml
