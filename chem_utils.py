@@ -359,4 +359,6 @@ def predict_batch(smiles_list, bundle, catalogs, train_fps, max_heavy_atoms=None
             "outside_domain": similarity < DOMAIN_THRESHOLD,
             "warnings": " ".join(input_warnings(mol, max_heavy_atoms)),
         })
-    return pd.DataFrame(rows)
+    columns = ["smiles", "valid", "problem", "logS", "mg_per_mL", "solubility", "QED",
+               "Ro5_violations", "alerts", "nearest_similarity", "outside_domain", "warnings"]
+    return pd.DataFrame(rows).reindex(columns=columns)

@@ -39,7 +39,7 @@ compound sharing a test molecule's ring framework removed too.
 | Model | RMSE, random folds | RMSE, unseen ring frameworks | Error on P=O compounds |
 | --- | --- | --- | --- |
 | Random forest, 7 descriptors, ESOL only (chem-ml-solubility) | 0.709 | 0.804 | 2.49 |
-| This app | 0.61 | 0.69 | 0.5 |
+| This app: gradient boosting, 25 descriptors, ESOL + AqSolDB | 0.607 | 0.695 | 0.52 |
 
 Errors are in log units (mol/L). Adding AqSolDB fixed the P=O compounds; the extra descriptors and
 gradient boosting improved everything else. The Ulrich et al. dataset scored the same overall but worse
@@ -71,13 +71,21 @@ accurate because near-duplicates in different datasets often have conflicting me
 
 ## Running it
 
+You'll need Python 3.13 or newer (tested on 3.13 and 3.14).
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
+git clone https://github.com/Ash679-ux/Molecule-Property-Explorer.git
+cd Molecule-Property-Explorer
+
+python3 -m venv .venv
+source .venv/bin/activate      # on Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+
 streamlit run app.py
 ```
 
-The trained model is in the repo (`models/solubility_model.joblib`, 2.6 MB), so the app runs straight away.
+The app opens in your browser at `http://localhost:8501`. The trained model is in the repo
+(`models/solubility_model.joblib`, 2.6 MB), so there's nothing to train first.
 
 ```bash
 python train_model.py   # retrain: downloads AqSolDB, cross-validates, saves the model
@@ -112,7 +120,9 @@ check, so it contains data from both datasets.
 - `app.py`: the Streamlit interface
 - `chem_utils.py`: chemistry and model code (features, predictions, alerts, logP map, domain check)
 - `train_model.py`: trains and evaluates the model, and saves it to `models/solubility_model.joblib`
-- `tests/`: the pytest suite, run by GitHub Actions on every push
+- `models/solubility_model.joblib`: the trained model and its evaluation results
+- `tests/` and `pytest.ini`: the test suite
+- `.github/workflows/tests.yml`: runs the tests on GitHub after every push and pull request
 - `data/delaney-processed.csv`: the ESOL dataset
 - `docs/screenshots/`: the images in this README
 - `requirements.txt` and `packages.txt`: the Python packages and the system libraries for deployment
