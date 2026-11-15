@@ -210,17 +210,18 @@ def predict_logS(mol, bundle):
     return float(bundle["model"].predict(feature_vector(mol))[0])
 
 
+# Rough plain-English bands of logS, for readability only: (lower bound, label), highest first.
+SOLUBILITY_BANDS = [
+    (0, "Highly soluble"),
+    (-2, "Soluble"),
+    (-4, "Moderately soluble"),
+    (-6, "Poorly soluble"),
+    (float("-inf"), "Practically insoluble"),
+]
+
+
 def solubility_label(logS):
-    """Rough plain-English band, for readability only."""
-    if logS >= 0:
-        return "Highly soluble"
-    if logS >= -2:
-        return "Soluble"
-    if logS >= -4:
-        return "Moderately soluble"
-    if logS >= -6:
-        return "Poorly soluble"
-    return "Practically insoluble"
+    return next(label for lower, label in SOLUBILITY_BANDS if logS >= lower)
 
 
 def logS_to_mg_per_ml(logS, mol):

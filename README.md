@@ -12,7 +12,7 @@ It builds on my earlier analysis project, [chem-ml-solubility](https://github.co
 
 ## Features
 
-- **Predicted solubility** in logS and mg/mL, with the model's typical error
+- **Predicted solubility** in logS and mg/mL, shown on a colour scale from insoluble to highly soluble with the model's typical error
 - **Why this prediction?** A heatmap of each atom's contribution to logP, the model's most important descriptor
 - **Applicability-domain warning** when a molecule is unlike the training data, with the nearest training molecule and its measured value
 - **Drug-likeness:** QED score and Lipinski's rule of five
