@@ -145,12 +145,12 @@ def solubility_section(mol, bundle):
         left, right = st.columns(2)
         left.metric("logS (mol/L)", f"{logS:.2f}")
         right.metric("≈ mg/mL", f"{cu.logS_to_mg_per_ml(logS, mol):.3g}")
-        st.markdown(f"**{cu.solubility_label(logS)}**")
-
         cv = bundle["cv"]
         rmse_random, rmse_scaffold = cv["random"]["RMSE"], cv["scaffold"]["RMSE"]
+        solubility_scale(logS, rmse_random)
         st.caption(
-            f"Typical error is about ±{rmse_random:.1f} log units (roughly a {10 ** rmse_random:.0f}x "
+            f"logS in mol/L. The bracket under the scale shows the typical error: about "
+            f"±{rmse_random:.1f} log units (roughly a {10 ** rmse_random:.0f}x "
             f"factor either way), rising to ±{rmse_scaffold:.1f} for ring frameworks the model hasn't seen."
         )
         if cu.has_phosphoryl(mol):
@@ -162,6 +162,66 @@ def solubility_section(mol, bundle):
             )
         domain_check(mol, bundle)
         descriptor_table(mol, bundle)
+
+
+SCALE_MIN, SCALE_MAX = -8, 2  # logS range drawn on the scale
+BAND_COLOURS = {  # red (insoluble) to green (soluble), with text colour that stays readable
+    "Practically insoluble": ("#d73027", "#ffffff"),
+    "Poorly soluble": ("#fc8d59", "#1a1a1a"),
+    "Moderately soluble": ("#fee08b", "#1a1a1a"),
+    "Soluble": ("#91cf60", "#1a1a1a"),
+    "Highly soluble": ("#1a9850", "#ffffff"),
+}
+
+
+def solubility_scale(logS, rmse):
+    """The solubility label as a coloured badge, and a scale marking the prediction and its typical error."""
+    def position(value):
+        return (min(max(value, SCALE_MIN), SCALE_MAX) - SCALE_MIN) / (SCALE_MAX - SCALE_MIN) * 100
+
+    label = cu.solubility_label(logS)
+    background, text = BAND_COLOURS[label]
+
+    uppers = [SCALE_MAX] + [lower for lower, _ in cu.SOLUBILITY_BANDS[:-1]]
+    segments = ""
+    for (lower, name), upper in zip(reversed(cu.SOLUBILITY_BANDS), reversed(uppers)):
+        lower = max(lower, SCALE_MIN)
+        seg_bg, seg_text = BAND_COLOURS[name]
+        segments += (
+            f'<div style="width:{position(upper) - position(lower)}%;background:{seg_bg};color:{seg_text};'
+            f'display:flex;align-items:center;justify-content:center;text-align:center;'
+            f'font-size:11px;line-height:1.1;padding:0 2px">{name}</div>'
+        )
+    ticks = "".join(
+        f'<span style="position:absolute;left:{position(v)}%;transform:translateX(-50%)">'
+        f'{f"{v:+d}" if v else "0"}</span>'
+        for v in range(SCALE_MIN, SCALE_MAX + 1, 2)
+    )
+    low, high = position(logS - rmse), position(logS + rmse)
+
+    marker = position(logS)
+    st.html(f"""
+    <div style="font-family:inherit;color:inherit">
+      <span style="display:inline-block;background:{background};color:{text};font-weight:700;
+                   font-size:1.25rem;padding:6px 14px;border-radius:8px">{label}</span>
+      <div style="position:relative;height:22px;margin-top:14px">
+        <div style="position:absolute;left:{marker}%;transform:translateX(-50%);font-size:13px;
+             font-weight:700;white-space:nowrap">{logS:.2f}<br>
+          <span style="display:block;text-align:center;line-height:0.6">▼</span></div>
+      </div>
+      <div style="position:relative;margin-top:4px">
+        <div style="display:flex;height:34px;border-radius:6px;overflow:hidden">{segments}</div>
+        <div style="position:absolute;top:0;left:{marker}%;transform:translateX(-50%);width:3px;
+             height:34px;background:#111;box-shadow:0 0 0 1.5px #fff"></div>
+      </div>
+      <div style="position:relative;height:12px;margin-top:4px">
+        <div style="position:absolute;top:5px;left:{low}%;width:{high - low}%;height:2px;background:currentColor"></div>
+        <div style="position:absolute;top:0;left:{low}%;width:2px;height:12px;background:currentColor"></div>
+        <div style="position:absolute;top:0;left:{high}%;width:2px;height:12px;background:currentColor"></div>
+      </div>
+      <div style="position:relative;height:18px;font-size:12px;opacity:0.75;margin-top:2px">{ticks}</div>
+    </div>
+    """)
 
 
 def domain_check(mol, bundle):
