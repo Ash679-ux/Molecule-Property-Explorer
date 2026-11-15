@@ -1,6 +1,6 @@
 # Molecule Property Explorer
 
-A Streamlit app that predicts a molecule's aqueous solubility from its structure, explains the
+A Streamlit app that predicts an organic molecule's aqueous solubility from its structure, explains the
 prediction, and checks drug-likeness and structural alerts. Type a SMILES string, draw the molecule,
 or upload a CSV of many.
 
