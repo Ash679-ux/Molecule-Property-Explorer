@@ -1,12 +1,21 @@
 # Molecule Property Explorer
 
-A Streamlit app that predicts a molecule's aqueous solubility from its structure, explains the
+A Streamlit app that predicts an organic molecule's aqueous solubility from its structure, explains the
 prediction, and checks drug-likeness and structural alerts. Type a SMILES string, draw the molecule,
 or upload a CSV of many.
 
 It builds on my earlier analysis project, [chem-ml-solubility](https://github.com/Ash679-ux/chem-ml-solubility).
 
-> Live demo: _link coming after deployment_
+## What I did
+
+I took the random forest from chem-ml-solubility and made it good enough to put in a tool. That project's
+biggest failure was phosphates and phosphonates (P=O compounds), predicted about 2.5 log units too insoluble.
+Adding a P=O count and about 7,700 compounds from AqSolDB cut that error to 0.5, and switching to gradient
+boosting with more descriptors cut the overall error from 0.71 to 0.61 log units. I then built the app
+around the things a user needs to judge a prediction: what drives it, a warning when a molecule is unlike
+the training data, and checks on the input itself.
+
+**Live app: [molecule-explorer.streamlit.app](https://molecule-explorer.streamlit.app/)**
 
 ![Aspirin's structure, predicted solubility and descriptors](docs/screenshots/overview.png)
 
@@ -36,14 +45,32 @@ All scores are measured on ESOL with the same 5-fold cross-validation (3 shuffle
 AqSolDB only ever joins the training folds, with every ESOL compound removed, and in scaffold folds every
 compound sharing a test molecule's ring framework removed too.
 
-| Model | RMSE, random folds | RMSE, unseen ring frameworks | Error on P=O compounds |
-| --- | --- | --- | --- |
-| Random forest, 7 descriptors, ESOL only (chem-ml-solubility) | 0.709 | 0.804 | 2.49 |
-| This app: gradient boosting, 25 descriptors, ESOL + AqSolDB | 0.607 | 0.695 | 0.52 |
+The table starts with simple baselines, then adds one change at a time from the chem-ml-solubility
+forest to the final model. Errors are RMSE in log units (mol/L); the last column is the mean absolute error
+on ESOL's 10 P=O compounds.
 
-Errors are in log units (mol/L). Adding AqSolDB fixed the P=O compounds; the extra descriptors and
-gradient boosting improved everything else. The Ulrich et al. dataset scored the same overall but worse
-on phosphates, because it drops the most soluble compounds (logS above 0.5).
+| Model | Training data | RMSE, random folds | RMSE, unseen ring frameworks | Error on P=O compounds |
+| --- | --- | --- | --- | --- |
+| Always predict the mean | ESOL | 2.10 | 2.12 | 2.87 |
+| Linear regression on logP alone | ESOL | 1.18 | 1.19 | 2.38 |
+| Delaney's ESOL equation (his published predictions) | ESOL, all of it | 0.91* | – | 1.40 |
+| Linear regression, 7 descriptors | ESOL | 0.995 | 1.023 | 2.45 |
+| Random forest, 7 descriptors (chem-ml-solubility) | ESOL | 0.709 | 0.804 | 2.49 |
+| + P=O count | ESOL | 0.691 | 0.783 | 1.88 |
+| + AqSolDB | ESOL + AqSolDB | 0.700 | 0.780 | 0.76 |
+| + 17 more descriptors | ESOL + AqSolDB | 0.640 | 0.728 | 0.78 |
+| Gradient boosting instead of a random forest (**this app**) | ESOL + AqSolDB | **0.607** | **0.695** | **0.52** |
+
+\* Delaney's equation was fitted to the whole of ESOL, so its score isn't cross-validated and is optimistic.
+
+The P=O count helps a little on its own (2.49 to 1.88), but ESOL has too few P=O compounds to learn from;
+it works properly once AqSolDB adds about 170 more. The extra descriptors and gradient boosting then improve everything else. The
+Ulrich et al. dataset scored the same overall but worse on phosphates, because it drops the most soluble
+compounds (logS above 0.5).
+
+Two caveats. The P=O figure rests on only 10 compounds: for the final model, the 95% bootstrap interval is
+0.3 to 0.7. And I compared about ten setups on these same folds and kept the best, so the final scores are
+slightly optimistic; a fully fair test would need a held-out set used only once.
 
 ### How far to trust a prediction
 
@@ -64,6 +91,13 @@ accurate because near-duplicates in different datasets often have conflicting me
 
 ### Limitations
 
+- **The biggest limit is the chemistry, not the model.** Solubility depends on how strongly a molecule
+  holds on to its own crystal as well as on how it interacts with water. Yalkowsky's General Solubility
+  Equation captures the crystal part through the melting point, but 2D descriptors can't see crystal
+  packing at all, so this sets a floor on the error that more data alone won't remove.
+- The ±0.6 bracket on the scale is the model's average error, not the uncertainty for that particular
+  molecule. The applicability-domain warning catches the worst cases.
+- Feature importances are measured on the training data, which flatters anything the model has memorised.
 - Structural alerts are flags, not verdicts: aspirin triggers the Brenk phenol ester alert.
 - The rule of five is a guide; many successful drugs, such as antibiotics, break it.
 - The "why" view explains logP, which carries about two-thirds of the model's importance, not the whole model.
@@ -98,9 +132,10 @@ trained it. On WSL, training uses 4 threads, since using every core can stall it
 
 ## Deploying
 
-The repo is ready for Streamlit Community Cloud: pinned packages in `requirements.txt`, the system
-libraries RDKit needs for drawing in `packages.txt`, and the model committed. Deploy from
-share.streamlit.io with main file `app.py` and Python 3.13.
+The app runs on Streamlit Community Cloud and redeploys automatically when `main` changes. The repo has
+what the server needs: pinned packages in `requirements.txt`, the system libraries RDKit needs for drawing
+in `packages.txt`, and the trained model. To deploy your own copy, use share.streamlit.io with main file
+`app.py` and Python 3.13.
 
 ## The data
 
