@@ -162,7 +162,8 @@ def error_by_similarity(similarities, errors):
         n = int(in_band.sum()) // len(CV_SEEDS)  # molecules, not predictions
         rmse = float(np.sqrt((errors[in_band] ** 2).mean())) if in_band.any() else None
         domain.append({"lo": lo, "hi": hi, "n": n, "RMSE": rmse})
-        print(f"  similarity {lo:.1f}-{hi:.1f}: {n:4d} molecules, RMSE = {rmse:.2f}")
+        rmse_text = f"{rmse:.2f}" if rmse is not None else "n/a (no molecules)"
+        print(f"  similarity {lo:.1f}-{hi:.1f}: {n:4d} molecules, RMSE = {rmse_text}")
     return domain
 
 
