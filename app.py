@@ -74,12 +74,18 @@ def sidebar(bundle):
     return mode, example, smiles
 
 
+def as_code(text, limit=80):
+    """User text made safe to show inside Markdown backticks, shortened if very long."""
+    text = text.replace("`", "'")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def drawing_box(example):
     st.subheader("Draw a molecule")
     # Keying on the example reloads the editor when a different example is picked.
     smiles = st_ketcher(EXAMPLES[example], height=450, key=f"ketcher-{example}")
     if smiles:
-        st.caption(f"Showing results for `{smiles}`. Edit the structure and click **Apply** to update.")
+        st.caption(f"Showing results for `{as_code(smiles)}`. Edit the structure and click **Apply** to update.")
     else:
         st.info("The editor is empty. Draw a structure (or pick an example), then click **Apply**.")
     return smiles
@@ -97,7 +103,7 @@ def batch_page(bundle):
     if upload is None:
         return
     try:
-        data = pd.read_csv(upload)
+        data = pd.read_csv(upload, nrows=BATCH_LIMIT + 1)  # the extra row shows whether there were more
     except Exception as err:
         st.error(f"Couldn't read that file as CSV: {err}")
         return
@@ -107,7 +113,7 @@ def batch_page(bundle):
         st.error(f"No `smiles` column found. Columns in the file: {', '.join(map(str, data.columns))}.")
         return
     if len(data) > BATCH_LIMIT:
-        st.warning(f"The file has {len(data):,} rows; only the first {BATCH_LIMIT:,} are used.")
+        st.warning(f"The file has more than {BATCH_LIMIT:,} rows; only the first {BATCH_LIMIT:,} are used.")
 
     with st.spinner("Predicting..."):
         results = cu.predict_batch(
@@ -226,12 +232,17 @@ def solubility_scale(logS, rmse):
 
 def domain_check(mol, bundle):
     similarity, idx = cu.nearest_neighbour(mol, get_training_fingerprints())
-    band = next(b for b in bundle["domain"] if (b["lo"], b["hi"]) == cu.band_of(similarity))
+    # None if the saved model has no error figure for this band (e.g. bands changed without retraining)
+    band = next((b for b in bundle["domain"] if (b["lo"], b["hi"]) == cu.band_of(similarity)), None)
+    band_rmse = band["RMSE"] if band else None
     if similarity < cu.DOMAIN_THRESHOLD:
+        error_note = (
+            f"In cross-validation, molecules this dissimilar had an error of about ±{band_rmse:.1f} log units, "
+            if band_rmse is not None else "Predictions for molecules this dissimilar are much less reliable, "
+        )
         st.warning(
             f"**Unlike the training data** (nearest training molecule is only {similarity:.2f} similar). "
-            f"In cross-validation, molecules this dissimilar had an error of about "
-            f"±{band['RMSE']:.1f} log units, so treat this prediction as a rough guess."
+            + error_note + "so treat this prediction as a rough guess."
         )
 
     train = bundle["train"]
@@ -241,7 +252,9 @@ def domain_check(mol, bundle):
             f"`{train['smiles'][idx]}`  \n"
             f"Measured logS **{train['logS'][idx]:.2f}** ({train['source'][idx]})"
         )
-        bands = ", ".join(f"{b['lo']:.1f}–{b['hi']:.1f}: ±{b['RMSE']:.2f}" for b in bundle["domain"])
+        bands = ", ".join(
+            f"{b['lo']:.1f}–{b['hi']:.1f}: ±{b['RMSE']:.2f}" for b in bundle["domain"] if b["RMSE"] is not None
+        )
         st.caption(
             "Similarity is the Tanimoto similarity of Morgan fingerprints (radius 2), from 0 to 1. "
             f"Cross-validated error by similarity: {bands}."
@@ -406,7 +419,7 @@ def main():
 
     mol, problem = cu.check_smiles(smiles)
     if problem:
-        st.error(f"**Couldn't read `{smiles.strip()}`.** {problem}")
+        st.error(f"**Couldn't read `{as_code(smiles.strip())}`.** {problem}")
         return
     if mol is None:
         if mode == "Typing SMILES":

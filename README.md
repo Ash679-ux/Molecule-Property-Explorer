@@ -123,7 +123,7 @@ The app opens in your browser at `http://localhost:8501`. The trained model is i
 
 ```bash
 python train_model.py   # retrain: downloads AqSolDB, cross-validates, saves the model
-pytest                  # run the 49 tests (also run by GitHub Actions on every push)
+pytest                  # run the 55 tests (also run by GitHub Actions on every push)
 ```
 
 Library versions are pinned because a saved scikit-learn model only loads reliably with the version that

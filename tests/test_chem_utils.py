@@ -188,3 +188,41 @@ def test_single_atom_heatmap_is_skipped(smiles):
 def test_batch_reports_problem(bundle, catalogs, train_fps):
     table = cu.predict_batch(["C1CC"], bundle, catalogs, train_fps)
     assert "ring" in table.loc[0, "problem"]
+
+
+# ------------------------------------------ parsing matches the training data
+@pytest.mark.parametrize("plain, explicit", [
+    ("CCO", "[H]OC([H])([H])C([H])([H])[H]"),
+    (ASPIRIN, "[H]OC(=O)c1c([H])c([H])c([H])c([H])c1OC(=O)C([H])([H])[H]"),
+])
+def test_explicit_hydrogens_give_the_same_molecule(plain, explicit, bundle):
+    """Input is parsed exactly as the training data was, however the hydrogens are written."""
+    a, _ = cu.check_smiles(plain)
+    b, _ = cu.check_smiles(explicit)
+    assert cu.canonical_smiles(a) == cu.canonical_smiles(b)
+    assert cu.featurize(a) == pytest.approx(cu.featurize(b))  # atom order differs, so tiny rounding differences
+    assert cu.predict_logS(a, bundle) == pytest.approx(cu.predict_logS(b, bundle))
+
+
+def test_check_smiles_matches_training_parser():
+    for smiles in [ASPIRIN, "C[C@H](N)C(=O)O", "[2H]C", "CC(=O)[O-].[Na+]"]:
+        mol, _ = cu.check_smiles(smiles)
+        assert cu.canonical_smiles(mol) == cu.canonical_smiles(cu.parse_smiles(smiles))
+
+
+# ----------------------------------------------------------------- size limits
+def test_too_many_heavy_atoms_is_rejected():
+    mol, problem = cu.check_smiles("C" * (cu.MAX_HEAVY_ATOMS + 1))
+    assert mol is None and "heavy atoms" in problem
+
+
+def test_too_long_smiles_is_rejected():
+    mol, problem = cu.check_smiles("C" * (cu.MAX_SMILES_LENGTH + 1))
+    assert mol is None and "characters long" in problem
+
+
+def test_batch_stops_at_atom_budget(bundle, catalogs, train_fps, monkeypatch):
+    monkeypatch.setattr(cu, "BATCH_ATOM_BUDGET", 20)  # aspirin has 13 heavy atoms
+    table = cu.predict_batch([ASPIRIN, ASPIRIN, ASPIRIN], bundle, catalogs, train_fps)
+    assert list(table["valid"]) == [True, False, False]
+    assert "limit" in table.loc[1, "problem"]

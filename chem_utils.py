@@ -44,6 +44,12 @@ FEATURE_NAMES = list(FEATURE_LABELS)
 PHOSPHORYL = [Chem.MolFromSmarts("[#15]=[#8]"), Chem.MolFromSmarts("[#15+]-[#8-]")]
 THIOPHOSPHORYL = [Chem.MolFromSmarts("[#15]=[#16]"), Chem.MolFromSmarts("[#15+]-[#16-]")]
 
+# Size limits keep one input from tying up the server: a 3,000-atom chain takes minutes.
+# The largest training molecule has 164 heavy atoms.
+MAX_SMILES_LENGTH = 2000
+MAX_HEAVY_ATOMS = 300
+BATCH_ATOM_BUDGET = 50_000  # total heavy atoms per uploaded CSV
+
 MORGAN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
 DOMAIN_THRESHOLD = 0.3  # below this similarity the cross-validated error rises clearly
 DOMAIN_BANDS = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.7), (0.7, 1.0)]
@@ -70,6 +76,8 @@ def check_smiles(text):
     text = (text or "").strip()
     if not text:
         return None, None
+    if len(text) > MAX_SMILES_LENGTH:
+        return None, f"This SMILES is {len(text):,} characters long; the app accepts up to {MAX_SMILES_LENGTH:,}."
     if any(ch.isspace() for ch in text):
         first = text.split()[0]
         return None, (
@@ -98,6 +106,15 @@ def check_smiles(text):
         )
     except Exception as err:
         return None, f"RDKit couldn't interpret this structure ({err})."
+
+    # The checks above only explain failures. Parse again the standard way, exactly as the
+    # training data was parsed, so explicit hydrogens are removed and features match training.
+    mol = parse_smiles(text)
+    if mol is None:
+        return None, "RDKit couldn't interpret this structure."
+    if mol.GetNumHeavyAtoms() > MAX_HEAVY_ATOMS:
+        return None, (f"This molecule has {mol.GetNumHeavyAtoms():,} heavy atoms; the app handles up to "
+                      f"{MAX_HEAVY_ATOMS} (the largest training molecule has 164).")
     return mol, None
 
 
@@ -257,6 +274,8 @@ def logp_contributions(mol):
     Sums exactly to Crippen.MolLogP(mol) (Wildman & Crippen, 1999).
     """
     with_h = Chem.AddHs(mol)  # heavy atoms keep their indices
+    # _CalcCrippenContribs is a private RDKit function (leading underscore), so a new RDKit
+    # release could change it; the pinned version and test_logp_contributions_sum_to_logp guard this.
     contribs = [c[0] for c in rdMolDescriptors._CalcCrippenContribs(with_h)]
     weights = [0.0] * mol.GetNumAtoms()
     for atom in with_h.GetAtoms():
@@ -337,13 +356,22 @@ def bonds_between(mol, atoms):
 # Batch mode
 
 def predict_batch(smiles_list, bundle, catalogs, train_fps, max_heavy_atoms=None):
-    """One row of results per SMILES; invalid ones are kept, with the reason in "problem"."""
+    """One row of results per SMILES; invalid ones are kept, with the reason in "problem".
+
+    Once BATCH_ATOM_BUDGET heavy atoms have been processed, the remaining rows are skipped.
+    """
     rows = []
+    atoms_used = 0
     for smiles in smiles_list:
         smiles = "" if pd.isna(smiles) else str(smiles)
         mol, problem = check_smiles(smiles)
         if mol is None:
             rows.append({"smiles": smiles, "valid": False, "problem": problem or "Empty SMILES."})
+            continue
+        atoms_used += mol.GetNumHeavyAtoms()
+        if atoms_used > BATCH_ATOM_BUDGET:
+            rows.append({"smiles": smiles, "valid": False, "problem":
+                         f"Skipped: the batch passed its limit of {BATCH_ATOM_BUDGET:,} heavy atoms in total."})
             continue
         logS = predict_logS(mol, bundle)
         similarity, _ = nearest_neighbour(mol, train_fps)
