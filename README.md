@@ -1,19 +1,22 @@
 # Molecule Property Explorer
 
-A Streamlit app that predicts an organic molecule's aqueous solubility from its structure, explains the
-prediction, and checks drug-likeness and structural alerts. Type a SMILES string, draw the molecule,
-or upload a CSV of many.
+A Streamlit app that predicts an organic molecule's aqueous solubility (logS) with a gradient-boosted
+model trained on 8,794 measured compounds, explains the prediction, and checks drug-likeness and
+structural alerts. Type a SMILES string, draw the molecule, or upload a CSV of many.
 
 It builds on my earlier analysis project, [chem-ml-solubility](https://github.com/Ash679-ux/chem-ml-solubility).
 
 ## What I did
 
-I took the random forest from chem-ml-solubility and made it good enough to put in a tool. That project's
-biggest failure was phosphates and phosphonates (P=O compounds), predicted about 2.5 log units too insoluble.
-Adding a P=O count and about 7,700 compounds from AqSolDB cut that error to 0.5, and switching to gradient
-boosting with more descriptors cut the overall error from 0.71 to 0.61 log units. I then built the app
-around the things a user needs to judge a prediction: what drives it, a warning when a molecule is unlike
-the training data, and checks on the input itself.
+I replaced the random forest from chem-ml-solubility with a gradient-boosting model and made it good
+enough to put in a tool. That project's biggest failure was phosphates and phosphonates (P=O compounds),
+predicted about 2.5 log units too insoluble. I added about 7,700 compounds from AqSolDB, which took the
+P=O compounds in the training data from 10 to roughly 180, and went from 7 RDKit descriptors to 25,
+including a P=O count. Swapping the random forest for gradient boosting came last and gave the lowest error
+on every measure. With the same cross-validation as before, the overall error fell from 0.71 to 0.61 log
+units and the P=O error from 2.5 to 0.5. I then built the app around what a user needs to judge
+a prediction: what drives it, a warning when a molecule is unlike the training data, and checks on the
+input itself.
 
 **Live app: [molecule-explorer.streamlit.app](https://molecule-explorer.streamlit.app/)**
 
@@ -21,13 +24,13 @@ the training data, and checks on the input itself.
 
 ## Features
 
-- **Predicted solubility** in logS and mg/mL, shown on a colour scale from insoluble to highly soluble with the model's typical error
-- **Why this prediction?** A heatmap of each atom's contribution to logP, the model's most important descriptor
-- **Applicability-domain warning** when a molecule is unlike the training data, with the nearest training molecule and its measured value
-- **Drug-likeness:** QED score and Lipinski's rule of five
-- **Structural alerts:** PAINS and Brenk flags, with the matched atoms highlighted
-- **Input checks:** says exactly why a SMILES can't be read (unmatched brackets, an unclosed ring, too many bonds on an atom, spaces) and warns about salts, unfamiliar elements, charges and very large molecules
-- **Three ways in:** type SMILES, draw in a Ketcher editor, or upload a CSV for batch predictions
+- Predicted solubility in logS and mg/mL, shown on a colour scale from insoluble to highly soluble with the model's typical error
+- A "Why this prediction?" section with the model's descriptor importances, and a heatmap of each atom's contribution to logP, its most important descriptor
+- A warning when a molecule is unlike the training data, with the nearest training molecule and its measured value
+- Drug-likeness: QED score and Lipinski's rule of five
+- PAINS and Brenk structural alerts, with the matched atoms highlighted
+- Input checks that explain why a SMILES can't be read (unmatched brackets, an unclosed ring, too many bonds on an atom, spaces), warn about salts, unfamiliar elements and charges, and turn away molecules far larger than anything in the training data
+- Three ways in: type SMILES, draw in a Ketcher editor, or upload a CSV of up to 1,000 molecules for batch predictions
 
 | Why this prediction? | Structural alerts |
 | --- | --- |
@@ -37,9 +40,16 @@ the training data, and checks on the input itself.
 
 ## Model
 
-Gradient boosting (scikit-learn's `HistGradientBoostingRegressor`) on 25 RDKit descriptors: the 7 from
-chem-ml-solubility, a P=O count, ring counts, sp³ fraction, molar refractivity, surface area, complexity
-and element counts. It is trained on ESOL and AqSolDB together (8,794 molecules).
+The model is gradient boosting, using scikit-learn's `HistGradientBoostingRegressor`. Gradient boosting
+builds decision trees one after another, each fitted to the errors left by the trees before it, whereas a
+random forest averages trees grown independently. The final model has 600 trees of up to 31 leaves,
+a learning rate of 0.05, at least 10 molecules per leaf and L2 regularisation of 1.0.
+
+It uses 25 RDKit descriptors: the 7 from chem-ml-solubility (logP, molecular weight, rotatable bonds,
+aromatic proportion, TPSA, H-bond donors and acceptors), P=O and P=S counts, ring counts, sp³ fraction,
+molar refractivity, heavy-atom count, surface area, complexity and element counts. It is trained on ESOL and AqSolDB together
+(8,794 molecules). Importance is measured by permutation: how much the error grows when one descriptor is
+shuffled. logP carries about two-thirds of it.
 
 All scores are measured on ESOL with the same 5-fold cross-validation (3 shuffles) as chem-ml-solubility.
 AqSolDB only ever joins the training folds, with every ESOL compound removed, and in scaffold folds every
@@ -64,13 +74,15 @@ on ESOL's 10 P=O compounds.
 \* Delaney's equation was fitted to the whole of ESOL, so its score isn't cross-validated and is optimistic.
 
 The P=O count helps a little on its own (2.49 to 1.88), but ESOL has too few P=O compounds to learn from;
-it works properly once AqSolDB adds about 170 more. The extra descriptors and gradient boosting then improve everything else. The
+it works properly once AqSolDB adds about 170 more. The extra descriptors then improve the overall error,
+and gradient boosting gives the biggest single drop on P=O compounds (0.78 to 0.52) as well as the best
+overall score. The
 Ulrich et al. dataset scored the same overall but worse on phosphates, because it drops the most soluble
 compounds (logS above 0.5).
 
-Two caveats. The P=O figure rests on only 10 compounds: for the final model, the 95% bootstrap interval is
+The P=O figure rests on only 10 compounds: for the final model, the 95% bootstrap interval is
 0.3 to 0.7. And I compared about ten setups on these same folds and kept the best, so the final scores are
-slightly optimistic; a fully fair test would need a held-out set used only once.
+slightly optimistic. A fully fair test would need a held-out set used only once.
 
 ### How far to trust a prediction
 
@@ -91,16 +103,16 @@ accurate because near-duplicates in different datasets often have conflicting me
 
 ### Limitations
 
-- **The biggest limit is the chemistry, not the model.** Solubility depends on how strongly a molecule
+- Solubility depends on how strongly a molecule
   holds on to its own crystal as well as on how it interacts with water. Yalkowsky's General Solubility
   Equation captures the crystal part through the melting point, but 2D descriptors can't see crystal
-  packing at all, so this sets a floor on the error that more data alone won't remove.
-- The ±0.6 bracket on the scale is the model's average error, not the uncertainty for that particular
-  molecule. The applicability-domain warning catches the worst cases.
+  packing at all. This puts a floor under the error that more data or a better model won't remove.
+- The ±0.6 bracket on the scale is the model's average error. The uncertainty for a particular molecule
+  can be larger or smaller. The applicability-domain warning catches the worst cases.
 - Feature importances are measured on the training data, which flatters anything the model has memorised.
-- Structural alerts are flags, not verdicts: aspirin triggers the Brenk phenol ester alert.
+- A structural alert only means a substructure matched. Aspirin, for example, triggers the Brenk phenol ester alert.
 - The rule of five is a guide; many successful drugs, such as antibiotics, break it.
-- The "why" view explains logP, which carries about two-thirds of the model's importance, not the whole model.
+- The atom heatmap in the "why" view only explains logP, which carries about two-thirds of the model's importance.
 - Fully miscible liquids such as triethyl phosphate can be predicted too low, since their logS isn't well defined.
 
 ## Running it
